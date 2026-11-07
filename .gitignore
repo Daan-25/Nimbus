@@ -1,0 +1,5 @@
+/build/
+core/target/
+mac/.build/
+.DS_Store
+*.ipa
