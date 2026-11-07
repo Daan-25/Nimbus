@@ -3,7 +3,7 @@
 Nimbus installs apps on your iPhone or iPad with a free Apple ID: no jailbreak, no paid developer account.
 It's an alternative to AltStore and SideStore, built to remove the parts that get in the way.
 
-> **Status:** early. The Mac app can sign in and install an `.ipa`. See the [roadmap](#roadmap).
+> **Status:** early. The Mac app installs and refreshes apps. See the [roadmap](#roadmap).
 
 ## Why Nimbus
 
@@ -12,7 +12,11 @@ It's an alternative to AltStore and SideStore, built to remove the parts that ge
   as the Mac it's running on, so the code arrives and sign-in works.
 - **Respects Apple's rate limit.** After an HTTP 429, other tools often retry straight away, which only
   extends Apple's block. Nimbus doesn't retry. It tells you when it's sensible to try again.
-- **No separate server.** No AltServer menu bar app and no mail plug-in. One app does everything.
+- **Refreshes in the background.** Nimbus lives in the menu bar and refreshes your apps two days before they
+  expire, over a cable or Wi-Fi. It refreshes all apps with one sign-in, and never more than once every six hours.
+- **Shows your limits.** See how many of your 3 app slots are used and how many app IDs you have left this week,
+  and remove apps from your device to free a slot.
+- **No separate server.** No AltServer and no mail plug-in. One app does everything.
 - **Clear errors.** Common problems come with a plain explanation of what to do.
 - **Your password stays on your Mac.** It goes only to Apple, and the Keychain stores it only if you ask.
 
@@ -41,12 +45,15 @@ open build/Nimbus.app
 The app and the helper exchange JSON lines over stdin and stdout. Run `nimbus-helper client-info` to see
 what Nimbus reports to Apple.
 
+Nimbus keeps a copy of every app you install in `~/Library/Application Support/Nimbus`, so it can refresh
+them later.
+
 ## Roadmap
 
 - [x] Mac app: sign in (with ADP), install an `.ipa`
-- [ ] Track installed apps and refresh them before they expire after 7 days
-- [ ] Show limits: 3 apps and 10 app IDs a week on a free account
-- [ ] Refresh over Wi-Fi
+- [x] Track installed apps and refresh them before they expire after 7 days
+- [x] Show limits: 3 apps and 10 app IDs a week on a free account
+- [x] Refresh over Wi-Fi
 - [ ] iOS app: refresh without a Mac, and enable JIT
 - [ ] Support AltStore sources
 

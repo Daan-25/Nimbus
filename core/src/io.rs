@@ -19,7 +19,9 @@ pub fn log(message: impl Into<String>) {
 
 /// Reads one JSON object from stdin.
 pub fn read_reply() -> Result<Value> {
-    let _guard = STDIN_LOCK.lock().map_err(|_| anyhow!("stdin lock poisoned"))?;
+    let _guard = STDIN_LOCK
+        .lock()
+        .map_err(|_| anyhow!("stdin lock poisoned"))?;
     let mut line = String::new();
     let read = std::io::stdin().lock().read_line(&mut line)?;
     if read == 0 {

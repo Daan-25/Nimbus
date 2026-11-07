@@ -15,6 +15,17 @@ struct HelperEvent: Decodable, Sendable {
     var devices: [Device]?
     var clientInfo: String?
     var userAgent: String?
+    var index: Int?
+    var count: Int?
+    var bundleId: String?
+    var name: String?
+    var version: String?
+    var expires: String?
+    var apps: [DeviceApp]?
+    var teamId: String?
+    var appIdsUsed: Int?
+    var appIdsMax: Int?
+    var appIdsAvailable: Int?
 
     static func decode(_ line: String) -> HelperEvent? {
         let decoder = JSONDecoder()
@@ -28,6 +39,14 @@ struct Device: Decodable, Hashable, Identifiable, Sendable {
     let name: String
     let connection: String
     var id: String { udid }
+}
+
+/// A sideloaded app on the device, installed by Nimbus or another tool.
+struct DeviceApp: Decodable, Hashable, Identifiable, Sendable {
+    let bundleId: String
+    let name: String
+    let version: String?
+    var id: String { bundleId }
 }
 
 struct TrustedNumber: Decodable, Hashable, Identifiable, Sendable {

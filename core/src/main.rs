@@ -5,10 +5,13 @@
 //! Commands:
 //!   nimbus-helper client-info   prints the identity Nimbus reports to Apple
 //!   nimbus-helper devices       prints the connected devices
+//!   nimbus-helper apps UDID     prints the sideloaded apps on a device
+//!   nimbus-helper uninstall UDID BUNDLE_ID
 //!   nimbus-helper install       reads an install request from stdin, then answers prompts
 //!
 //! Events (stdout): {"event": "log" | "progress" | "two_factor" | "signed_in" | "select_team" |
-//!                   "revoke_certs" | "done" | "error" | "devices" | "client_info", ...}
+//!                   "revoke_certs" | "installing" | "installed" | "app_failed" | "limits" |
+//!                   "done" | "error" | "devices" | "apps" | "uninstalled" | "client_info", ...}
 //! Replies (stdin): {"code": "123456"} | {"action": "resend" | "devices" | "sms" | "abort", "number_id": 1}
 //!                  {"team_id": "..."} | {"serials": ["..."]}
 
@@ -16,27 +19,34 @@ mod client_info;
 mod io;
 
 use anyhow::{Context, Result, anyhow};
-use idevice::usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdConnection, UsbmuxdDevice};
+use idevice::{
+    IdeviceService,
+    installation_proxy::InstallationProxyClient,
+    provider::UsbmuxdProvider,
+    usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdConnection, UsbmuxdDevice},
+};
 use isideload::{
     anisette::remote_v3::RemoteV3AnisetteProvider,
     auth::apple_account::{AppleAccount, TwoFactorCallbackParams, TwoFactorCallbackResponse},
     dev::{
-        certificates::DevelopmentCertificate, developer_session::DeveloperSession,
-        teams::DeveloperTeam,
+        app_ids::AppIdsApi, certificates::DevelopmentCertificate,
+        developer_session::DeveloperSession, devices::DevicesApi, teams::DeveloperTeam,
     },
     sideload::{
         SideloaderBuilder, TeamSelection,
         builder::{ExtensionsBehavior, ExtensionsBehaviorSelection, MaxCertsBehavior},
+        sideloader::Sideloader,
     },
     util::{
-        callbacks::ExtensionsBehaviorCallbackBox, device::IdeviceInfo,
+        callbacks::{ExtensionsBehaviorCallbackBox, MaxCertsCallback},
+        device::IdeviceInfo,
         keyring_storage::KeyringStorage,
     },
 };
 use rootcause::Report;
 use serde::Deserialize;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const STORAGE_SERVICE: &str = "Nimbus";
 const MACHINE_NAME: &str = "Nimbus";
@@ -45,7 +55,8 @@ const MACHINE_NAME: &str = "Nimbus";
 struct InstallRequest {
     apple_id: String,
     password: String,
-    ipa: PathBuf,
+    /// Installed one after another, with a single sign-in.
+    apps: Vec<PathBuf>,
     udid: Option<String>,
     anisette_url: Option<String>,
     #[serde(default)]
@@ -61,19 +72,31 @@ async fn main() {
     io::init_logging();
 
     let command = std::env::args().nth(1).unwrap_or_default();
-    let result = match command.as_str() {
-        "client-info" => print_client_info(),
-        "devices" => list_devices().await,
-        "install" => install().await,
-        _ => Err(anyhow!(
-            "Unknown command '{command}'. Use client-info, devices or install."
-        )),
-    };
+    let result = run(&command).await;
 
     if let Err(error) = result {
         io::emit(json!({ "event": "error", "message": explain(&format!("{error:#}")) }));
         std::process::exit(1);
     }
+}
+
+async fn run(command: &str) -> Result<()> {
+    match command {
+        "client-info" => print_client_info(),
+        "devices" => list_devices().await,
+        "apps" => list_apps(&arg(2)?).await,
+        "uninstall" => uninstall(&arg(2)?, &arg(3)?).await,
+        "install" => install().await,
+        _ => Err(anyhow!(
+            "Unknown command '{command}'. Use client-info, devices, apps, uninstall or install."
+        )),
+    }
+}
+
+fn arg(index: usize) -> Result<String> {
+    std::env::args()
+        .nth(index)
+        .ok_or_else(|| anyhow!("Missing argument {index}"))
 }
 
 /// Puts a plain-language hint in front of errors people run into most.
@@ -138,24 +161,85 @@ async fn list_devices() -> Result<()> {
     Ok(())
 }
 
+async fn provider_for(udid: Option<&str>) -> Result<UsbmuxdProvider> {
+    let device = connected_devices()
+        .await?
+        .into_iter()
+        .find(|d| udid.is_none_or(|udid| d.udid == udid))
+        .ok_or_else(|| {
+            anyhow!("No device found. Connect your iPhone or iPad with a cable and unlock it.")
+        })?;
+    Ok(device.to_provider(UsbmuxdAddr::from_env_var()?, "nimbus"))
+}
+
+/// Lists apps that were installed with a development certificate, i.e. sideloaded apps.
+/// These are the apps that count towards the limit of 3 on a free Apple ID.
+async fn list_apps(udid: &str) -> Result<()> {
+    let provider = provider_for(Some(udid)).await?;
+    let mut client = InstallationProxyClient::connect(&provider)
+        .await
+        .map_err(|e| anyhow!("Can't read the apps on your device: {e}"))?;
+    let apps = client
+        .get_apps(Some("User"), None)
+        .await
+        .map_err(|e| anyhow!("Can't read the apps on your device: {e}"))?;
+
+    let mut list = Vec::new();
+    for (bundle_id, info) in apps {
+        let Some(info) = info.as_dictionary() else {
+            continue;
+        };
+        let text = |key: &str| {
+            info.get(key)
+                .and_then(|v| v.as_string())
+                .map(str::to_string)
+        };
+        let signer = text("SignerIdentity").unwrap_or_default();
+        if !(signer.starts_with("Apple Development") || signer.starts_with("iPhone Developer")) {
+            continue;
+        }
+        list.push(json!({
+            "bundle_id": bundle_id,
+            "name": text("CFBundleDisplayName").or_else(|| text("CFBundleName")).unwrap_or(bundle_id.clone()),
+            "version": text("CFBundleShortVersionString"),
+            "signer": signer,
+        }));
+    }
+    list.sort_by_key(|a| a["name"].as_str().unwrap_or_default().to_lowercase());
+    io::emit(json!({ "event": "apps", "apps": list }));
+    Ok(())
+}
+
+async fn uninstall(udid: &str, bundle_id: &str) -> Result<()> {
+    let provider = provider_for(Some(udid)).await?;
+    let mut client = InstallationProxyClient::connect(&provider)
+        .await
+        .map_err(|e| anyhow!("Can't reach your device: {e}"))?;
+    client
+        .uninstall(bundle_id, None)
+        .await
+        .map_err(|e| anyhow!("Couldn't remove {bundle_id}: {e}"))?;
+    io::emit(json!({ "event": "uninstalled", "bundle_id": bundle_id }));
+    Ok(())
+}
+
 async fn install() -> Result<()> {
     let request: InstallRequest =
         serde_json::from_value(io::read_reply()?).context("Invalid install request")?;
-    if !request.ipa.is_file() {
-        return Err(anyhow!("Can't find {}", request.ipa.display()));
+    if request.apps.is_empty() {
+        return Err(anyhow!("No apps to install."));
+    }
+    if !request.apps.iter().any(|path| path.is_file()) {
+        return Err(anyhow!("Can't find the app file."));
     }
     let apple_id = request.apple_id.trim().to_lowercase();
 
     // Find the device before signing in, so a missing device doesn't cost a sign-in attempt.
     io::log("Looking for your device…");
-    let device = connected_devices()
-        .await?
-        .into_iter()
-        .find(|d| request.udid.as_deref().is_none_or(|udid| d.udid == udid))
-        .ok_or_else(|| {
-            anyhow!("No device found. Connect your iPhone or iPad with a cable and unlock it.")
-        })?;
-    let provider = device.to_provider(UsbmuxdAddr::from_env_var()?, "nimbus");
+    let provider = provider_for(request.udid.as_deref()).await?;
+    let device = IdeviceInfo::from_device(&provider)
+        .await
+        .map_err(|e| anyhow!("Can't read your device: {e}"))?;
 
     let identity = client_info::current_mac();
     io::log(format!("Signing in as {}…", identity.client_info));
@@ -182,35 +266,166 @@ async fn install() -> Result<()> {
         .await
         .map_err(|e| anyhow!("Couldn't open a developer session: {e}"))?;
 
-    let mut sideloader = SideloaderBuilder::<_, ExtensionsBehaviorCallbackBox>::new(
-        session,
-        apple_id,
-    )
-    .team_selection(TeamSelection::PromptOnce(team_prompt))
-    .max_certs_behavior(MaxCertsBehavior::Prompt(revoke_certs_prompt))
-    .extensions_behavior(ExtensionsBehaviorSelection::Fixed(
-        ExtensionsBehavior::ReuseMain,
-    ))
-    .storage(Box::new(KeyringStorage::new(STORAGE_SERVICE.to_string())))
-    .machine_name(MACHINE_NAME.to_string())
-    .build();
+    let mut sideloader =
+        SideloaderBuilder::<_, ExtensionsBehaviorCallbackBox>::new(session, apple_id)
+            .team_selection(TeamSelection::PromptOnce(team_prompt))
+            .max_certs_behavior(MaxCertsBehavior::Prompt(revoke_certs_prompt))
+            .extensions_behavior(ExtensionsBehaviorSelection::Fixed(
+                ExtensionsBehavior::ReuseMain,
+            ))
+            .storage(Box::new(KeyringStorage::new(STORAGE_SERVICE.to_string())))
+            .machine_name(MACHINE_NAME.to_string())
+            .build();
 
-    io::log("Signing and installing the app…");
+    let team = sideloader
+        .get_team()
+        .await
+        .map_err(|e| anyhow!("Couldn't load your developer team: {e}"))?;
     sideloader
-        .install_app(
-            &provider,
-            request.ipa,
-            request.increased_memory_limit,
-            Some(|progress: f32| async move {
-                io::emit(json!({ "event": "progress", "value": progress }));
+        .get_dev_session()
+        .ensure_device_registered(&team, &device.name, &device.udid, None)
+        .await
+        .map_err(|e| anyhow!("Couldn't register your device with Apple: {e}"))?;
+
+    let count = request.apps.len();
+    let mut failures = 0;
+    for (index, path) in request.apps.into_iter().enumerate() {
+        io::emit(json!({ "event": "installing", "index": index, "count": count }));
+        // A missing file only skips this app, so the other apps still get refreshed.
+        let result = if !path.is_file() {
+            Err(anyhow!("Can't find {}", path.display()))
+        } else {
+            install_one(
+                &mut sideloader,
+                &provider,
+                &team,
+                &path,
+                request.increased_memory_limit,
+                index,
+                count,
+            )
+            .await
+        };
+        match result {
+            Ok(installed) => io::emit(installed),
+            Err(error) => {
+                failures += 1;
+                io::emit(json!({
+                    "event": "app_failed",
+                    "index": index,
+                    "message": explain(&format!("{error:#}")),
+                }));
+            }
+        }
+    }
+
+    if let Ok(ids) = sideloader.get_dev_session().list_app_ids(&team, None).await {
+        io::emit(json!({
+            "event": "limits",
+            "team_id": team.team_id,
+            "app_ids_used": ids.app_ids.len(),
+            "app_ids_max": ids.max_quantity,
+            "app_ids_available": ids.available_quantity,
+        }));
+    }
+
+    if failures == count {
+        return Err(anyhow!(if count == 1 {
+            "The app couldn't be installed."
+        } else {
+            "None of the apps could be installed."
+        }));
+    }
+    io::emit(json!({ "event": "done" }));
+    Ok(())
+}
+
+async fn install_one<C: MaxCertsCallback>(
+    sideloader: &mut Sideloader<C, ExtensionsBehaviorCallbackBox>,
+    provider: &UsbmuxdProvider,
+    team: &DeveloperTeam,
+    ipa: &Path,
+    increased_memory_limit: bool,
+    index: usize,
+    count: usize,
+) -> Result<serde_json::Value> {
+    // Signing is the first half of the work for each app, transferring and installing the second.
+    let overall = move |part: f64| (index as f64 + part.clamp(0.0, 1.0)) / count as f64;
+
+    io::log("Signing…");
+    let (signed, _) = sideloader
+        .sign_app(
+            ipa.to_path_buf(),
+            Some(team.clone()),
+            increased_memory_limit,
+            Some(|p: f32| async move {
+                io::emit(json!({ "event": "progress", "value": overall(p as f64 * 0.5) }));
             }),
+            None,
             None,
         )
         .await
-        .map_err(|e| anyhow!("Installing failed: {e}"))?;
+        .map_err(|e| anyhow!("Signing failed: {e}"))?;
 
-    io::emit(json!({ "event": "done" }));
-    Ok(())
+    let info = signed_app_info(&signed);
+
+    io::log("Installing…");
+    let result = isideload::sideload::install::install_app(provider, &signed, |p| {
+        io::emit(json!({ "event": "progress", "value": overall(0.5 + p as f64 / 200.0) }));
+    })
+    .await
+    .map_err(|e| anyhow!("Installing failed: {e}"));
+
+    // sign_app extracts the IPA to <temp>/<name>.ipa_extracted/Payload/<name>.app.
+    if let Some(extracted) = signed.parent().and_then(Path::parent)
+        && extracted.starts_with(std::env::temp_dir())
+        && extracted.to_string_lossy().ends_with("_extracted")
+    {
+        let _ = std::fs::remove_dir_all(extracted);
+    }
+    result?;
+
+    let mut installed = info?;
+    installed["event"] = json!("installed");
+    installed["index"] = json!(index);
+    Ok(installed)
+}
+
+/// Reads the bundle ID, name, version and expiry date from a signed app.
+fn signed_app_info(app: &Path) -> Result<serde_json::Value> {
+    let info: plist::Dictionary = plist::from_file(app.join("Info.plist"))
+        .context("Can't read the signed app's Info.plist")?;
+    let text = |key: &str| {
+        info.get(key)
+            .and_then(|v| v.as_string())
+            .map(str::to_string)
+    };
+
+    // The profile is a signed CMS blob with an XML plist inside.
+    let profile = std::fs::read(app.join("embedded.mobileprovision"))
+        .context("The signed app has no provisioning profile")?;
+    let start = profile
+        .windows(5)
+        .position(|w| w == b"<?xml")
+        .context("Unreadable provisioning profile")?;
+    let end = profile
+        .windows(8)
+        .rposition(|w| w == b"</plist>")
+        .context("Unreadable provisioning profile")?
+        + 8;
+    let profile: plist::Dictionary =
+        plist::from_bytes(&profile[start..end]).context("Unreadable provisioning profile")?;
+    let expires = profile
+        .get("ExpirationDate")
+        .and_then(|v| v.as_date())
+        .map(|d| d.to_xml_format());
+
+    Ok(json!({
+        "bundle_id": text("CFBundleIdentifier"),
+        "name": text("CFBundleDisplayName").or_else(|| text("CFBundleName")),
+        "version": text("CFBundleShortVersionString"),
+        "expires": expires,
+    }))
 }
 
 async fn ask_async(event: serde_json::Value) -> Result<serde_json::Value, Report> {
@@ -246,7 +461,11 @@ async fn two_factor_prompt(
         }
         Some("abort") => TwoFactorCallbackResponse::Abort,
         _ => TwoFactorCallbackResponse::SubmitCode(
-            reply["code"].as_str().unwrap_or_default().trim().to_string(),
+            reply["code"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
         ),
     })
 }
@@ -278,7 +497,11 @@ async fn revoke_certs_prompt(
 
     let serials: Vec<String> = reply["serials"]
         .as_array()
-        .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     Ok((!serials.is_empty()).then_some(serials))
 }
