@@ -1,9 +1,8 @@
 //! The commands of the sideloading engine. See lib.rs for the protocol.
 
-use crate::device::{self, Provider};
+use crate::device::{self, Link};
 use crate::{client_info, io};
 use anyhow::{Context, Result, anyhow};
-use idevice::{IdeviceService, installation_proxy::InstallationProxyClient};
 use isideload::{
     anisette::remote_v3::RemoteV3AnisetteProvider,
     auth::apple_account::{AppleAccount, TwoFactorCallbackParams, TwoFactorCallbackResponse},
@@ -16,18 +15,13 @@ use isideload::{
         builder::{ExtensionsBehavior, ExtensionsBehaviorSelection, MaxCertsBehavior},
         sideloader::Sideloader,
     },
-    util::{
-        callbacks::{ExtensionsBehaviorCallbackBox, MaxCertsCallback},
-        device::IdeviceInfo,
-        keyring_storage::KeyringStorage,
-    },
+    util::callbacks::{ExtensionsBehaviorCallbackBox, MaxCertsCallback},
 };
 use rootcause::Report;
 use serde::Deserialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
-const STORAGE_SERVICE: &str = "Nimbus";
 const MACHINE_NAME: &str = "Nimbus";
 
 #[derive(Deserialize)]
@@ -73,8 +67,19 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
         "apps" => list_apps(arg(0)?).await,
         "uninstall" => uninstall(arg(0)?, arg(1)?).await,
         "install" => install().await,
+        "diagnose" => device::diagnose().await,
+        #[cfg(target_os = "macos")]
+        "setup-phone" => {
+            crate::setup::setup_phone(arg(0)?, arg(1)?, args.get(2).map(String::as_str)).await
+        }
+        #[cfg(target_os = "macos")]
+        "sync-phone" => crate::setup::sync_phone(arg(0)?, arg(1)?).await,
+        #[cfg(target_os = "macos")]
+        "crash-log" => crate::setup::crash_log(arg(0)?, arg(1)?).await,
+        #[cfg(target_os = "macos")]
+        "pairing-file" => crate::setup::save_pairing_file(arg(0)?, arg(1)?).await,
         _ => Err(anyhow!(
-            "Unknown command '{command}'. Use client-info, devices, apps, uninstall or install."
+            "Unknown command '{command}'. Use client-info, devices, apps, uninstall, install or setup-phone."
         )),
     }
 }
@@ -87,8 +92,10 @@ fn explain(message: &str) -> String {
         "Your Apple ID or password is incorrect."
     } else if message.contains("-22411") || message.contains("-22421") {
         "Apple didn't accept the verification code. Request a new one and try again."
-    } else if device::is_local() && message.to_lowercase().contains("connection refused") {
+    } else if device::is_local() && message.contains("Can't connect to") {
         "Can't reach this device. Turn on LocalDevVPN and try again."
+    } else if message.contains("does not have pairing file") && !device::is_local() {
+        "Your device doesn't trust this Mac anymore. Unplug the cable, plug it back in, and tap Trust on your device."
     } else if message.to_lowercase().contains("usbmuxd") {
         "Can't talk to your device. Connect it with a cable, unlock it and tap Trust."
     } else if message.contains("3 apps") || message.contains("maximum number of apps") {
@@ -117,8 +124,9 @@ async fn list_devices() -> Result<()> {
 /// Lists apps that were installed with a development certificate, i.e. sideloaded apps.
 /// These are the apps that count towards the limit of 3 on a free Apple ID.
 async fn list_apps(udid: &str) -> Result<()> {
-    let provider = device::provider_for(Some(udid)).await?;
-    let mut client = InstallationProxyClient::connect(&provider)
+    let mut link = device::link_for(Some(udid)).await?;
+    let mut client = link
+        .installation_proxy()
         .await
         .map_err(|e| anyhow!("Can't read the apps on your device: {e}"))?;
     let apps = client
@@ -153,8 +161,9 @@ async fn list_apps(udid: &str) -> Result<()> {
 }
 
 async fn uninstall(udid: &str, bundle_id: &str) -> Result<()> {
-    let provider = device::provider_for(Some(udid)).await?;
-    let mut client = InstallationProxyClient::connect(&provider)
+    let mut link = device::link_for(Some(udid)).await?;
+    let mut client = link
+        .installation_proxy()
         .await
         .map_err(|e| anyhow!("Can't reach your device: {e}"))?;
     client
@@ -178,10 +187,8 @@ async fn install() -> Result<()> {
 
     // Find the device before signing in, so a missing device doesn't cost a sign-in attempt.
     io::log("Looking for your device…");
-    let provider = device::provider_for(request.udid.as_deref()).await?;
-    let device = IdeviceInfo::from_device(&provider)
-        .await
-        .map_err(|e| anyhow!("Can't read your device: {e}"))?;
+    let mut link = device::link_for(request.udid.as_deref()).await?;
+    let device = link.info().await?;
 
     let identity = client_info::current();
     io::log(format!("Signing in as {}…", identity.client_info));
@@ -189,7 +196,7 @@ async fn install() -> Result<()> {
     let mut anisette = RemoteV3AnisetteProvider::default()
         .map_err(|e| anyhow!("{e}"))?
         .set_serial_number("0".to_string())
-        .set_storage(Box::new(KeyringStorage::new(STORAGE_SERVICE.to_string())))
+        .set_storage(crate::storage::new())
         .set_client_info_override(Some(identity));
     if let Some(url) = request.anisette_url.as_deref().filter(|u| !u.is_empty()) {
         anisette = anisette.set_url(url);
@@ -215,7 +222,7 @@ async fn install() -> Result<()> {
             .extensions_behavior(ExtensionsBehaviorSelection::Fixed(
                 ExtensionsBehavior::ReuseMain,
             ))
-            .storage(Box::new(KeyringStorage::new(STORAGE_SERVICE.to_string())))
+            .storage(crate::storage::new())
             .machine_name(MACHINE_NAME.to_string())
             .build();
 
@@ -239,7 +246,7 @@ async fn install() -> Result<()> {
         } else {
             install_one(
                 &mut sideloader,
-                &provider,
+                &mut link,
                 &team,
                 &path,
                 request.increased_memory_limit,
@@ -284,7 +291,7 @@ async fn install() -> Result<()> {
 
 async fn install_one<C: MaxCertsCallback>(
     sideloader: &mut Sideloader<C, ExtensionsBehaviorCallbackBox>,
-    provider: &Provider,
+    link: &mut Link,
     team: &DeveloperTeam,
     ipa: &Path,
     increased_memory_limit: bool,
@@ -312,11 +319,12 @@ async fn install_one<C: MaxCertsCallback>(
     let info = signed_app_info(&signed);
 
     io::log("Installing…");
-    let result = isideload::sideload::install::install_app(provider, &signed, |p| {
-        io::emit(json!({ "event": "progress", "value": overall(0.5 + p as f64 / 200.0) }));
-    })
-    .await
-    .map_err(|e| anyhow!("Installing failed: {e}"));
+    let result = link
+        .install(&signed, |p| {
+            io::emit(json!({ "event": "progress", "value": overall(0.5 + p as f64 / 200.0) }));
+        })
+        .await
+        .map_err(|e| anyhow!("Installing failed: {e}"));
 
     // sign_app extracts the IPA to <temp>/<name>.ipa_extracted/Payload/<name>.app.
     if let Some(extracted) = signed.parent().and_then(Path::parent)

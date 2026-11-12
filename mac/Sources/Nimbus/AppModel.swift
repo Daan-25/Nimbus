@@ -16,6 +16,11 @@ final class AppModel {
     static let refreshWindow: TimeInterval = 2 * 24 * 60 * 60
     /// Minimum time between automatic refreshes, so a problem can never cause a burst of sign-ins.
     static let autoRefreshInterval: TimeInterval = 6 * 60 * 60
+    /// Bundle ID of Nimbus for iPhone, before the team ID is added.
+    static let phoneAppBundleID = "io.github.daan-25.nimbus.ios"
+    /// Nimbus for iPhone, which comes inside the Mac app when it was built with it.
+    static let phoneAppIPA = Bundle.main.url(forResource: "Nimbus-iOS", withExtension: "ipa")
+
     /// How long apps signed with a free Apple ID keep working.
     static let signatureLifetime: TimeInterval = 7 * 24 * 60 * 60
 
@@ -114,6 +119,9 @@ final class AppModel {
     private var isAutomatic = false
     /// The device of the running install; the picker can change while it runs.
     private var runningUDID: String?
+    /// Installed bundle ID of Nimbus for iPhone, when it still has to be set up after this install.
+    private var phoneAppToSetUp: String?
+    private var setupUDID: String?
     private var started = false
 
     private struct Job {
@@ -123,6 +131,8 @@ final class AppModel {
         let existing: LibraryApp?
         /// Set when installing an app from a source.
         var origin: Origin?
+        /// Nimbus for iPhone gets its pairing file once it's installed.
+        var isPhoneApp = false
     }
 
     private struct Origin {
@@ -177,6 +187,17 @@ final class AppModel {
     var usedAppSlots: Int? {
         guard let teamID, appIDsMax != nil, let deviceApps else { return nil }
         return deviceApps.filter { $0.bundleId.contains(teamID) }.count
+    }
+
+    func isPhoneApp(_ app: LibraryApp) -> Bool {
+        app.bundleID.hasPrefix(Self.phoneAppBundleID + ".")
+    }
+
+    /// Whether to offer Nimbus for iPhone for the selected device.
+    var canInstallPhoneApp: Bool {
+        Self.phoneAppIPA != nil && selectedDevice != nil && !libraryAppsOnDevice.contains {
+            isPhoneApp($0) && isInstalled($0) != false
+        }
     }
 
     var nextExpiry: Date? {
@@ -255,7 +276,13 @@ final class AppModel {
 
     // MARK: Actions
 
-    func add(_ url: URL) {
+    /// Installs Nimbus for iPhone on the selected device and gives it its pairing file.
+    func installPhoneApp() {
+        guard let url = Self.phoneAppIPA else { return }
+        add(url, isPhoneApp: true)
+    }
+
+    func add(_ url: URL, isPhoneApp: Bool = false) {
         guard !isBusy else { return }
         guard hasCredentials else {
             return fail("Enter your Apple ID and password first.")
@@ -274,7 +301,7 @@ final class AppModel {
         } catch {
             return fail("Couldn't copy \(url.lastPathComponent): \(error.localizedDescription)")
         }
-        run([Job(ipaFile: ipaFile, name: info.name, existing: nil)], automatic: false)
+        run([Job(ipaFile: ipaFile, name: info.name, existing: nil, isPhoneApp: isPhoneApp)], automatic: false)
     }
 
     /// Says why an app can't be installed when every app slot is taken.
@@ -389,6 +416,12 @@ final class AppModel {
         guard hasCredentials else {
             return fail("Enter your Apple ID and password first.")
         }
+        // Nimbus for iPhone comes with this Mac app, so a refresh also brings it up to date.
+        if let newest = Self.phoneAppIPA {
+            for app in apps where isPhoneApp(app) {
+                Library.replaceIPA(app.ipaFile, with: newest)
+            }
+        }
         run(apps.map { Job(ipaFile: $0.ipaFile, name: $0.name, existing: $0) }, automatic: automatic)
     }
 
@@ -489,6 +522,7 @@ final class AppModel {
         self.jobs = jobs
         runningUDID = device.udid
         jobsFailed = 0
+        phoneAppToSetUp = nil
         isAutomatic = automatic
         phase = .working
         status = automatic ? "Refreshing apps automatically…" : "Starting…"
@@ -501,7 +535,7 @@ final class AppModel {
             try helper.start(
                 onEvent: { [weak self] in self?.handle($0) },
                 onLog: { [weak self] in self?.log.append($0) },
-                onExit: { [weak self] code in self?.helperExited(code) }
+                onExit: { [weak self, weak helper] code in self?.helperExited(code, helper) }
             )
             helper.send([
                 "apple_id": normalizedAppleID,
@@ -511,6 +545,107 @@ final class AppModel {
             ])
         } catch {
             fail(error.localizedDescription)
+        }
+    }
+
+    // MARK: Nimbus for iPhone
+
+    /// Sends the pairing file again, for when Nimbus on the device lost it or it stopped working.
+    func setUpPhoneApp(_ app: LibraryApp) {
+        guard !isBusy else { return }
+        log = []
+        setUpPhoneApp(bundleID: app.bundleID, udid: app.deviceUDID)
+    }
+
+    private func setUpPhoneApp(bundleID: String, udid: String) {
+        phase = .working
+        status = "Setting up Nimbus on your device…"
+        progress = nil
+        do {
+            var arguments = ["setup-phone", udid, bundleID]
+            // With the Apple ID, the Mac also hands over its signing key for that account.
+            if !normalizedAppleID.isEmpty { arguments.append(normalizedAppleID) }
+            let helper = try Helper(arguments: arguments)
+            setupUDID = udid
+            self.helper = helper
+            try helper.start(
+                onEvent: { [weak self] in self?.handleSetup($0) },
+                onLog: { [weak self] in self?.log.append($0) },
+                onExit: { [weak self, weak helper] code in self?.helperExited(code, helper) }
+            )
+        } catch {
+            fail(error.localizedDescription)
+        }
+    }
+
+    private func handleSetup(_ event: HelperEvent) {
+        switch event.event {
+        case "log":
+            if let message = event.message {
+                log.append(message)
+                status = message
+                if message.contains("Trust") { needAttention(message) }
+            }
+        case "phone_ready":
+            let ready = "Nimbus is on your device. Install LocalDevVPN from the App Store there, turn it on, then open Nimbus."
+            if let udid = setupUDID, syncPhone(udid: udid, then: ready) { return }
+            phase = .done
+            status = ready
+            NSSound(named: "Glass")?.play()
+        case "error":
+            // The app itself is installed; only the pairing file is missing.
+            fail("Nimbus is installed, but setting it up failed: \(event.message ?? "Unknown error")\n\nChoose Set Up Again from the app's menu to retry.")
+        default:
+            break
+        }
+    }
+
+    /// Copies the apps this Mac installed on a device to Nimbus on that device, so it can
+    /// refresh them without the Mac. Returns false when there's nothing to do.
+    /// `finalStatus` is shown once the copy is done, or when it fails, since what came before worked.
+    @discardableResult
+    private func syncPhone(udid: String, then finalStatus: String) -> Bool {
+        let apps = library.filter { $0.deviceUDID == udid }
+        guard let phoneApp = apps.first(where: { isPhoneApp($0) }) else { return false }
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(apps) else { return false }
+        let files = Set(apps.map(\.ipaFile)).map {
+            ["path": Library.ipaFolder.appendingPathComponent($0).path, "name": $0]
+        }
+
+        do {
+            let helper = try Helper(arguments: ["sync-phone", udid, phoneApp.bundleID])
+            self.helper = helper
+            phase = .working
+            status = "Copying your apps to Nimbus on your device…"
+            progress = nil
+            let finish: @MainActor (String?) -> Void = { [weak self] problem in
+                guard let self, self.helper === helper else { return }
+                self.helper = nil
+                if let problem { self.log.append("Couldn't copy your apps to your device: \(problem)") }
+                self.phase = .done
+                self.progress = 1
+                self.status = finalStatus
+                NSSound(named: "Glass")?.play()
+            }
+            try helper.start(
+                onEvent: { [weak self] event in
+                    switch event.event {
+                    case "progress": self?.progress = event.value
+                    case "done": finish(nil)
+                    case "error": finish(event.message ?? "Unknown error")
+                    default: break
+                    }
+                },
+                onLog: { [weak self] in self?.log.append($0) },
+                onExit: { code in if code != 0 { finish("nimbus-helper stopped (exit code \(code)).") } }
+            )
+            helper.send(["library": String(decoding: data, as: UTF8.self), "files": files])
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -607,6 +742,8 @@ final class AppModel {
 
     private func installed(_ job: Job, _ event: HelperEvent) {
         guard let bundleID = event.bundleId, let udid = runningUDID else { return }
+        // Also after a refresh, so one click brings the app, its pairing file and its signing key up to date.
+        if job.isPhoneApp || job.existing.map(isPhoneApp) == true { phoneAppToSetUp = bundleID }
         let expires = event.expires.flatMap { try? Date($0, strategy: .iso8601) }
         let app = LibraryApp(
             bundleID: bundleID,
@@ -637,6 +774,11 @@ final class AppModel {
 
     private func finish() {
         cleanUpNewIPAs()
+        if let bundleID = phoneAppToSetUp, let udid = runningUDID {
+            phoneAppToSetUp = nil
+            Task { await refreshDeviceApps() }
+            return setUpPhoneApp(bundleID: bundleID, udid: udid)
+        }
         let succeeded = jobs.count - jobsFailed
         phase = jobsFailed == 0 ? .done : .failed
         progress = 1
@@ -648,13 +790,15 @@ final class AppModel {
                 ? "\(succeeded) apps are refreshed."
                 : "\(succeeded) of \(jobs.count) apps are refreshed. See the log for details."
         }
+        Task { await refreshDeviceApps() }
         if isAutomatic {
             notify(title: "Apps refreshed", body: status)
             isAutomatic = false
+        } else if let udid = runningUDID, jobsFailed == 0, syncPhone(udid: udid, then: status) {
+            // The sound plays once the apps are copied.
         } else {
             NSSound(named: "Glass")?.play()
         }
-        Task { await refreshDeviceApps() }
     }
 
     private func fail(_ message: String) {
@@ -673,7 +817,9 @@ final class AppModel {
         }
     }
 
-    private func helperExited(_ code: Int32) {
+    private func helperExited(_ code: Int32, _ exited: Helper?) {
+        // Setting up Nimbus for iPhone starts a second helper before the first one has exited.
+        guard exited === helper else { return }
         helper = nil
         if isBusy {
             fail("nimbus-helper stopped unexpectedly (exit code \(code)). See the log for details.")

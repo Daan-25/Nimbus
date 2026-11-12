@@ -42,6 +42,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# Nimbus for iPhone goes inside the Mac app, which installs it. Skipped without the iOS toolchain.
+if rustup target list --installed 2>/dev/null | grep -qx aarch64-apple-ios; then
+    "$ROOT/scripts/build-ios.sh"
+    cp "$ROOT/build/Nimbus-iOS.ipa" "$APP/Contents/Resources/Nimbus-iOS.ipa"
+else
+    echo "› Skipping Nimbus for iPhone (run: rustup target add aarch64-apple-ios)"
+fi
+
 echo "› Signing (ad hoc)"
 codesign --force --sign - "$APP/Contents/MacOS/nimbus-helper"
 codesign --force --sign - "$APP"

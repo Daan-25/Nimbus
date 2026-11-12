@@ -37,8 +37,9 @@ You need Xcode (or the Command Line Tools) and [Rust](https://rustup.rs).
 open build/Nimbus.app
 ```
 
-The iPhone app is an early version that only shows your sideloaded apps. To build it, add the Rust
-targets once with `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`, then:
+The iPhone app is an early version. To build it, add the Rust
+targets once with `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`. `build.sh` then puts the
+iPhone app inside the Mac app, which offers to install it. To build it on its own:
 
 ```sh
 ./scripts/build-ios.sh        # build/Nimbus-iOS.ipa, unsigned: install it with Nimbus on your Mac
@@ -59,7 +60,20 @@ over stdin and stdout. The iPhone app links it and calls the C functions in `cor
 Run `nimbus-helper client-info` to see what Nimbus reports to Apple.
 
 An iPhone app can't talk to its own device directly, so on the iPhone the engine connects through a
-loopback VPN (LocalDevVPN, from the App Store) with a pairing file from your Mac.
+loopback VPN (LocalDevVPN, from the App Store). It proves who it is with a remote pairing file and opens an
+encrypted tunnel to the device; since iOS 26.4, devices hang up on the older lockdown connection when it
+comes from themselves. The Mac app creates the pairing file when it installs the iPhone app, and puts it in
+the app's Documents folder together with the Mac's identity, its signing key for your Apple ID and a copy of
+the apps it installed on that device. With the same key and identity, the iPhone signs with the Mac's
+certificate and Apple sees one machine; a free Apple ID has too few certificates for each to have its own.
+The iPhone app moves the keys out of Documents the first time it opens.
+
+To try that connection from the Mac, over Wi-Fi:
+
+```sh
+nimbus-helper pairing-file UDID pairing.plist
+NIMBUS_DEVICE_ADDRESS=<device IP> NIMBUS_PAIRING_FILE=pairing.plist nimbus-helper diagnose
+```
 
 Nimbus keeps a copy of every app you install in `~/Library/Application Support/Nimbus`, so it can refresh
 them later. The sources you added are cached in `sources.json` in the same folder.
@@ -75,10 +89,10 @@ downloading those needs a Patreon sign-in.
 - [x] Refresh over Wi-Fi
 - [x] AltStore sources: browse, install and update apps
 - [ ] iOS app: refresh without a Mac, and enable JIT
-  - [x] The engine builds for iOS and connects with a pairing file
+  - [x] The engine builds for iOS and connects through a remote pairing tunnel
   - [x] First iPhone app: shows the sideloaded apps on the device
-  - [ ] The Mac app installs the iPhone app and sets it up
-  - [ ] Sign in and refresh on the iPhone
+  - [x] The Mac app installs the iPhone app and sets it up
+  - [ ] Sign in and refresh on the iPhone (built, not yet confirmed on a device)
 
 ## Credits
 

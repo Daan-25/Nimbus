@@ -51,10 +51,20 @@ enum Engine {
         }
     }
 
+    /// Runs a command and returns what it logged.
+    static func log(of command: String) async -> [String] {
+        let events = Collector()
+        await run(command) { events.add($0) }
+        return events.all.compactMap { $0.event == "log" || $0.event == "error" ? $0.message : nil }
+    }
+
     /// Runs a command that answers with a single event.
-    static func runOnce(_ command: String, args: [String] = []) async throws -> HelperEvent {
+    static func runOnce(_ command: String, args: [String] = [], log: ((String) -> Void)? = nil) async throws -> HelperEvent {
         let events = Collector()
         await run(command, args: args) { events.add($0) }
+        if let log {
+            events.all.filter { $0.event == "log" }.compactMap(\.message).forEach(log)
+        }
         if let error = events.all.first(where: { $0.event == "error" }) {
             throw Failure.message(error.message ?? "Unknown error")
         }

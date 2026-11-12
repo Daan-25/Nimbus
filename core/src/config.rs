@@ -13,13 +13,17 @@ pub struct Config {
     /// so accounts with Advanced Data Protection keep working.
     pub client_info: Option<String>,
     pub user_agent: Option<String>,
+    /// Where to keep the signing key and anisette state, instead of the Keychain.
+    pub storage_dir: Option<PathBuf>,
 }
 
-/// A device reached over the network with a pairing file, without usbmuxd.
+/// A device reached by address with a remote pairing file, without usbmuxd.
 /// On iOS the address is that of the device itself as seen through the loopback VPN.
 #[derive(Clone, Deserialize)]
 pub struct LocalDevice {
     pub address: IpAddr,
+    /// Port of the device's pairing service; 49152 when left out.
+    pub port: Option<u16>,
     pub pairing_file: PathBuf,
 }
 

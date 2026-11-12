@@ -144,6 +144,23 @@ struct ContentView: View {
             ForEach(model.otherAppsOnDevice) { app in
                 OtherAppRow(app: app)
             }
+            if model.canInstallPhoneApp {
+                HStack(spacing: 12) {
+                    Image(systemName: "iphone.and.arrow.forward.inward")
+                        .font(.title2)
+                        .foregroundStyle(.tint)
+                        .frame(width: 30)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Nimbus for \(model.selectedDevice?.name ?? "your device")")
+                        Text("See your apps on the device itself. Early version; uses one app slot and needs a cable to set up.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Install") { model.installPhoneApp() }
+                        .disabled(model.isBusy || model.isRateLimited)
+                }
+            }
             HStack {
                 Button("Add App…", systemImage: "plus") { choosingIPA = true }
                 Spacer()
@@ -262,6 +279,10 @@ private struct LibraryAppRow: View {
                     if confirmRemoval(of: app.name) { model.uninstall(bundleID: app.bundleID, name: app.name) }
                 }
                     .disabled(model.isBusy || model.isInstalled(app) == false)
+                if model.isPhoneApp(app) {
+                    Button("Set Up Again") { model.setUpPhoneApp(app) }
+                        .disabled(model.isBusy || model.isInstalled(app) == false)
+                }
                 Button("Forget") { model.forget(app) }
                     .disabled(model.isBusy)
             } label: {

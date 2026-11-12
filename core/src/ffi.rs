@@ -57,6 +57,10 @@ struct Running {
     cancel: Arc<Notify>,
 }
 
+/// The engine's futures are large, and the threads an app calls from have small stacks
+/// (512 KB on iOS), which overflowed while opening the tunnel. So commands get their own.
+const STACK_SIZE: usize = 16 * 1024 * 1024;
+
 static RUN_LOCK: Mutex<()> = Mutex::new(());
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 
@@ -64,6 +68,7 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
+            .thread_stack_size(STACK_SIZE)
             .enable_all()
             .build()
             .expect("Failed to start the tokio runtime")
@@ -122,13 +127,23 @@ pub extern "C" fn nimbus_run(
         replies: Mutex::new(receiver),
     }));
 
-    let succeeded = runtime().block_on(async {
-        tokio::select! {
-            succeeded = crate::run(&request.command, &request.args) => succeeded,
-            // Dropping the command stops it, like quitting nimbus-helper does.
-            _ = cancel.notified() => false,
-        }
-    });
+    let command = std::thread::Builder::new()
+        .name("nimbus-engine".to_string())
+        .stack_size(STACK_SIZE)
+        .spawn(move || {
+            runtime().block_on(async {
+                tokio::select! {
+                    succeeded = crate::run(&request.command, &request.args) => succeeded,
+                    // Dropping the command stops it, like quitting nimbus-helper does.
+                    _ = cancel.notified() => false,
+                }
+            })
+        });
+    // A panic in the engine ends the command instead of the app.
+    let succeeded = command
+        .ok()
+        .and_then(|thread| thread.join().ok())
+        .unwrap_or(false);
 
     if let Ok(mut running) = RUNNING.lock() {
         *running = None;

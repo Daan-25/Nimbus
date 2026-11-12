@@ -13,12 +13,18 @@ path = "src/main.rs"
 [dependencies]
 rootcause = "0.12"
 anyhow = "1.0.104"
-idevice = { version = "0.1.68", default-features = false, features = ["usbmuxd", "tcp", "heartbeat", "ring"] }
+idevice = { version = "0.1.68", default-features = false, features = ["usbmuxd", "tcp", "remote_pairing", "rsd", "tunnel_tcp_stack", "ring"] }
 isideload = "0.5.2"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 plist = "1.8"
+sha2 = "0.10"
+hex = "0.4"
+
+# Setting up the iPhone app is something only the Mac does.
+[target.'cfg(target_os = "macos")'.dependencies]
+idevice = { version = "0.1.68", default-features = false, features = ["house_arrest", "crashreportcopymobile"] }
