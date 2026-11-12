@@ -62,6 +62,16 @@ final class AppModel {
         didSet { defaults.set(appIDsMax, forKey: "appIDsMax") }
     }
 
+    // MARK: Sources
+
+    var sources = SourceLoader.loadCache() {
+        didSet { SourceLoader.saveCache(sources) }
+    }
+    /// Why a source couldn't be reloaded, by source address.
+    var sourceErrors: [URL: String] = [:]
+    var isLoadingSources = false
+    private var lastSourcesReload = Date.distantPast
+
     // MARK: Settings
 
     var autoRefresh = UserDefaults.standard.object(forKey: "autoRefresh") as? Bool ?? true {
@@ -95,6 +105,9 @@ final class AppModel {
     }
 
     private var helper: Helper?
+    private var download: Download?
+    /// Identifies the running download, so a cancelled one can't continue into an install.
+    private var downloadID: UUID?
     /// The jobs of the running install, in the order they were sent to the helper.
     private var jobs: [Job] = []
     private var jobsFailed = 0
@@ -108,6 +121,19 @@ final class AppModel {
         let name: String
         /// Set when refreshing an app that's already in the library.
         let existing: LibraryApp?
+        /// Set when installing an app from a source.
+        var origin: Origin?
+    }
+
+    private struct Origin {
+        let sourceURL: URL
+        let bundleID: String
+        let version: String?
+        let iconURL: URL?
+    }
+
+    enum SourceAppState {
+        case available, installed, updateAvailable
     }
 
     // MARK: Derived state
@@ -157,6 +183,27 @@ final class AppModel {
         library.map(expiry(of:)).min()
     }
 
+    func state(of app: SourceApp, in source: Source) -> SourceAppState {
+        let mine = libraryAppsOnDevice.first { $0.sourceBundleID == app.bundleID && $0.sourceURL == source.url }
+        if let mine, isInstalled(mine) != false {
+            return mine.sourceVersion == app.versionKey ? .installed : .updateAvailable
+        }
+        if let teamID, deviceApps?.contains(where: { $0.bundleId == "\(app.bundleID).\(teamID)" }) == true {
+            return .installed
+        }
+        return .available
+    }
+
+    /// The newer release of an app that was installed from a source, if there is one.
+    func update(for app: LibraryApp) -> (source: Source, app: SourceApp)? {
+        guard let url = app.sourceURL, let bundleID = app.sourceBundleID, isInstalled(app) != false,
+              let source = sources.first(where: { $0.url == url }),
+              let latest = source.apps.first(where: { $0.bundleID == bundleID }),
+              latest.versionKey != app.sourceVersion
+        else { return nil }
+        return (source, latest)
+    }
+
     // MARK: Lifecycle
 
     func start() {
@@ -184,6 +231,10 @@ final class AppModel {
                         lastAppsCheck = .now
                     }
                     autoRefreshIfNeeded()
+                }
+                // Nimbus can run for days, so look for app updates now and then.
+                if Date.now.timeIntervalSince(lastSourcesReload) > Self.autoRefreshInterval {
+                    await reloadSources()
                 }
                 try? await Task.sleep(for: .seconds(5))
             }
@@ -213,13 +264,8 @@ final class AppModel {
             return fail("\(url.lastPathComponent) isn't a valid app (.ipa) file.")
         }
 
-        // An app that's already installed is replaced, so it doesn't need a free slot.
-        if let teamID, let used = usedAppSlots {
-            let installedID = "\(info.bundleID).\(teamID)"
-            let alreadyInstalled = deviceApps?.contains { $0.bundleId == installedID } ?? false
-            if !alreadyInstalled && used >= Self.freeAppSlots {
-                return fail("All \(Self.freeAppSlots) app slots on \(selectedDevice?.name ?? "your device") are in use. Remove an app first.")
-            }
+        if let problem = slotProblem(for: info.bundleID) {
+            return fail(problem)
         }
 
         let ipaFile: String
@@ -230,6 +276,113 @@ final class AppModel {
         }
         run([Job(ipaFile: ipaFile, name: info.name, existing: nil)], automatic: false)
     }
+
+    /// Says why an app can't be installed when every app slot is taken.
+    private func slotProblem(for bundleID: String) -> String? {
+        guard let teamID, let used = usedAppSlots else { return nil }
+        // An app that's already installed is replaced, so it doesn't need a free slot.
+        let installedID = "\(bundleID).\(teamID)"
+        let alreadyInstalled = deviceApps?.contains { $0.bundleId == installedID } ?? false
+        guard !alreadyInstalled && used >= Self.freeAppSlots else { return nil }
+        return "All \(Self.freeAppSlots) app slots on \(selectedDevice?.name ?? "your device") are in use. Remove an app first."
+    }
+
+    /// Downloads an app from a source and installs it. Also used to update an installed app.
+    func install(_ app: SourceApp, from source: Source) {
+        guard !isBusy else { return }
+        guard hasCredentials else {
+            return fail("Enter your Apple ID and password first.")
+        }
+        guard selectedDevice != nil else {
+            return fail("Connect your iPhone or iPad first.")
+        }
+        guard !isRateLimited else {
+            return fail("Apple is limiting sign-ins. Wait until the block has passed, or choose Try anyway.")
+        }
+        if let problem = slotProblem(for: app.bundleID) {
+            return fail(problem)
+        }
+
+        let ipaFile = UUID().uuidString + ".ipa"
+        let id = UUID()
+        downloadID = id
+        phase = .working
+        status = "Downloading \(app.name)…"
+        progress = 0
+        download = Download(
+            app.downloadURL,
+            to: Library.ipaFolder.appendingPathComponent(ipaFile),
+            onProgress: { [weak self] in
+                if self?.downloadID == id { self?.progress = $0 }
+            },
+            completion: { [weak self] result in
+                Task { await self?.downloaded(result, id: id, ipaFile: ipaFile, app: app, source: source) }
+            }
+        )
+    }
+
+    private func downloaded(_ result: Result<Void, Error>, id: UUID, ipaFile: String, app: SourceApp, source: Source) async {
+        let file = Library.ipaFolder.appendingPathComponent(ipaFile)
+        // Cancelled while downloading.
+        guard downloadID == id else { return Library.deleteIPA(ipaFile) }
+        download = nil
+        if case .failure(let error) = result {
+            downloadID = nil
+            return fail("Couldn't download \(app.name): \(error.localizedDescription)")
+        }
+        if let expected = app.sha256 {
+            status = "Checking \(app.name)…"
+            progress = nil
+            let actual = await Library.sha256(of: file)
+            // Cancelled while checking.
+            guard downloadID == id else { return Library.deleteIPA(ipaFile) }
+            guard actual == expected else {
+                downloadID = nil
+                Library.deleteIPA(ipaFile)
+                return fail("The download of \(app.name) doesn't match the checksum in its source, so Nimbus didn't install it.")
+            }
+        }
+        downloadID = nil
+        guard IPAInfo.read(file) != nil else {
+            Library.deleteIPA(ipaFile)
+            return fail("The download of \(app.name) isn't a valid app (.ipa) file.")
+        }
+        let origin = Origin(sourceURL: source.url, bundleID: app.bundleID, version: app.versionKey, iconURL: app.iconURL)
+        run([Job(ipaFile: ipaFile, name: app.name, existing: nil, origin: origin)], automatic: false)
+    }
+
+    // MARK: Sources
+
+    func addSource(_ url: URL) async throws {
+        guard !sources.contains(where: { $0.url == url }) else { return }
+        let source = try await SourceLoader.load(url)
+        if !sources.contains(where: { $0.url == url }) { sources.append(source) }
+    }
+
+    func removeSource(_ source: Source) {
+        sources.removeAll { $0.url == source.url }
+        sourceErrors[source.url] = nil
+    }
+
+    func reloadSources() async {
+        guard !isLoadingSources else { return }
+        isLoadingSources = true
+        defer { isLoadingSources = false }
+        lastSourcesReload = .now
+        for url in sources.map(\.url) {
+            do {
+                let fresh = try await SourceLoader.load(url)
+                // The source can be removed while it loads.
+                guard let index = sources.firstIndex(where: { $0.url == url }) else { continue }
+                if sources[index] != fresh { sources[index] = fresh }
+                sourceErrors[url] = nil
+            } catch {
+                if sources.contains(where: { $0.url == url }) { sourceErrors[url] = error.localizedDescription }
+            }
+        }
+    }
+
+    // MARK: Refreshing
 
     func refresh(_ apps: [LibraryApp], automatic: Bool = false) {
         guard !isBusy, !apps.isEmpty else { return }
@@ -290,6 +443,9 @@ final class AppModel {
     func cancel() {
         helper?.cancel()
         helper = nil
+        download?.cancel()
+        download = nil
+        downloadID = nil
         twoFactor = nil
         teams = nil
         certificates = nil
@@ -459,7 +615,12 @@ final class AppModel {
             version: event.version,
             ipaFile: job.ipaFile,
             installedAt: .now,
-            expiresAt: expires
+            expiresAt: expires,
+            // A refresh keeps the link to the source; an .ipa the user picked has none.
+            sourceURL: job.origin?.sourceURL ?? job.existing?.sourceURL,
+            sourceBundleID: job.origin?.bundleID ?? job.existing?.sourceBundleID,
+            sourceVersion: job.origin?.version ?? job.existing?.sourceVersion,
+            iconURL: job.origin?.iconURL ?? job.existing?.iconURL
         )
         // The app was forgotten while it was being refreshed.
         if job.existing != nil && !library.contains(where: { $0.id == app.id }) { return }

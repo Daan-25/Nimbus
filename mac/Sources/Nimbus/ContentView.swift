@@ -6,35 +6,32 @@ struct ContentView: View {
     @State private var showLog = false
     @State private var choosingIPA = false
     @State private var dropTargeted = false
+    @State private var tab = Tab.myApps
+
+    private enum Tab {
+        case myApps, browse
+    }
 
     var body: some View {
         @Bindable var model = model
 
         VStack(spacing: 0) {
-            Form {
-                accountSection
-                deviceSection
-                appsSection
-                if model.isRateLimited { rateLimitSection }
-                settingsSection
+            switch tab {
+            case .myApps: myApps
+            case .browse: BrowseView()
             }
-            .formStyle(.grouped)
-            .dropDestination(for: URL.self) { urls, _ in
-                guard let url = urls.first(where: { $0.pathExtension.lowercased() == "ipa" }) else { return false }
-                model.add(url)
-                return true
-            } isTargeted: { dropTargeted = $0 }
-            .overlay {
-                if dropTargeted {
-                    RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
-                        .padding(6)
-                        .allowsHitTesting(false)
-                }
-            }
-
             Divider()
             footer
+        }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("View", selection: $tab) {
+                    Text("My Apps").tag(Tab.myApps)
+                    Text("Browse").tag(Tab.browse)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
         }
         .task { model.start() }
         .fileImporter(isPresented: $choosingIPA, allowedContentTypes: [.ipa]) { result in
@@ -55,6 +52,30 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showLog) {
             LogSheet(lines: model.log)
+        }
+    }
+
+    private var myApps: some View {
+        Form {
+            accountSection
+            deviceSection
+            appsSection
+            if model.isRateLimited { rateLimitSection }
+            settingsSection
+        }
+        .formStyle(.grouped)
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first(where: { $0.pathExtension.lowercased() == "ipa" }) else { return false }
+            model.add(url)
+            return true
+        } isTargeted: { dropTargeted = $0 }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
+                    .padding(6)
+                    .allowsHitTesting(false)
+            }
         }
     }
 
@@ -114,7 +135,7 @@ struct ContentView: View {
     private var appsSection: some View {
         Section {
             if model.libraryAppsOnDevice.isEmpty && model.otherAppsOnDevice.isEmpty {
-                Text("Add an app with the button below, or drop an .ipa file on this window.")
+                Text("Find an app under Browse, add an .ipa file with the button below, or drop one on this window.")
                     .foregroundStyle(.secondary)
             }
             ForEach(model.libraryAppsOnDevice) { app in
@@ -220,17 +241,22 @@ private struct LibraryAppRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "app.fill")
-                .font(.title)
-                .foregroundStyle(.tint)
+            AppIcon(url: app.iconURL)
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name)
                 expiry
                     .font(.caption)
             }
             Spacer()
-            Button("Refresh") { model.refresh([app]) }
-                .disabled(model.isBusy || model.isRateLimited)
+            // Updating signs the app again, so it also refreshes it.
+            if let update = model.update(for: app) {
+                Button("Update") { model.install(update.app, from: update.source) }
+                    .disabled(model.isBusy || model.isRateLimited)
+                    .help(update.app.version.map { "Version \($0) is available." } ?? "A newer version is available.")
+            } else {
+                Button("Refresh") { model.refresh([app]) }
+                    .disabled(model.isBusy || model.isRateLimited)
+            }
             Menu {
                 Button("Remove from Device…") {
                     if confirmRemoval(of: app.name) { model.uninstall(bundleID: app.bundleID, name: app.name) }

@@ -3,7 +3,7 @@
 Nimbus installs apps on your iPhone or iPad with a free Apple ID: no jailbreak, no paid developer account.
 It's an alternative to AltStore and SideStore, built to remove the parts that get in the way.
 
-> **Status:** early. The Mac app installs and refreshes apps. See the [roadmap](#roadmap).
+> **Status:** early. The Mac app installs apps from AltStore sources or `.ipa` files and refreshes them. See the [roadmap](#roadmap).
 
 ## Why Nimbus
 
@@ -16,6 +16,8 @@ It's an alternative to AltStore and SideStore, built to remove the parts that ge
   expire, over a cable or Wi-Fi. It refreshes all apps with one sign-in, and never more than once every six hours.
 - **Shows your limits.** See how many of your 3 app slots are used and how many app IDs you have left this week,
   and remove apps from your device to free a slot.
+- **Works with AltStore sources.** Add a source, then install and update its apps from Nimbus. Downloads are
+  checked against the source's checksum when it has one.
 - **No separate server.** No AltServer and no mail plug-in. One app does everything.
 - **Clear errors.** Common problems come with a plain explanation of what to do.
 - **Your password stays on your Mac.** It goes only to Apple, and the Keychain stores it only if you ask.
@@ -46,7 +48,10 @@ The app and the helper exchange JSON lines over stdin and stdout. Run `nimbus-he
 what Nimbus reports to Apple.
 
 Nimbus keeps a copy of every app you install in `~/Library/Application Support/Nimbus`, so it can refresh
-them later.
+them later. The sources you added are cached in `sources.json` in the same folder.
+
+Nimbus only loads sources and downloads over HTTPS. It leaves out apps for Patreon supporters, because
+downloading those needs a Patreon sign-in.
 
 ## Roadmap
 
@@ -54,8 +59,8 @@ them later.
 - [x] Track installed apps and refresh them before they expire after 7 days
 - [x] Show limits: 3 apps and 10 app IDs a week on a free account
 - [x] Refresh over Wi-Fi
+- [x] AltStore sources: browse, install and update apps
 - [ ] iOS app: refresh without a Mac, and enable JIT
-- [ ] Support AltStore sources
 
 ## Credits
 
