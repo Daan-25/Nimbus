@@ -73,6 +73,8 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
             crate::setup::setup_phone(arg(0)?, arg(1)?, args.get(2).map(String::as_str)).await
         }
         #[cfg(target_os = "macos")]
+        "phone-status" => crate::setup::phone_status(arg(0)?, arg(1)?).await,
+        #[cfg(target_os = "macos")]
         "sync-phone" => crate::setup::sync_phone(arg(0)?, arg(1)?).await,
         #[cfg(target_os = "macos")]
         "crash-log" => crate::setup::crash_log(arg(0)?, arg(1)?).await,

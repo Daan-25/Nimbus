@@ -21,6 +21,8 @@ const IDENTITY_FILE: &str = "/Documents/identity.json";
 const SIGNING_FILE: &str = "/Documents/signing.json";
 const LIBRARY_FILE: &str = "/Documents/library.json";
 const IPA_FOLDER: &str = "/Documents/IPAs";
+/// Written by Nimbus on the device: until when the apps it refreshed itself keep working.
+const REFRESHED_FILE: &str = "/Documents/refreshed.json";
 /// The lockdown pairing file of earlier versions, which devices no longer accept from themselves.
 const OLD_PAIRING_FILE: &str = "/Documents/pairing.plist";
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(60);
@@ -185,6 +187,30 @@ pub async fn sync_phone(udid: &str, bundle_id: &str) -> Result<()> {
 
     write(&mut documents, LIBRARY_FILE, request.library.as_bytes()).await?;
     io::emit(json!({ "event": "done" }));
+    Ok(())
+}
+
+/// Reports which apps Nimbus on the device refreshed itself, so this Mac doesn't refresh
+/// them again: {"event": "phone_status", "refreshed": {"<bundle ID>": "<expiry date>"}}.
+pub async fn phone_status(udid: &str, bundle_id: &str) -> Result<()> {
+    let provider = device::usb_provider(udid).await?;
+    let mut documents = HouseArrestClient::connect(&provider as &dyn IdeviceProvider)
+        .await
+        .map_err(|e| anyhow!("Can't reach the apps on your device: {e}"))?
+        .vend_documents(bundle_id)
+        .await
+        .map_err(|e| anyhow!("Can't open Nimbus on your device. Is it installed? ({e})"))?;
+
+    // No file means the device hasn't refreshed anything yet.
+    let refreshed = match documents.open(REFRESHED_FILE, AfcFopenMode::RdOnly).await {
+        Ok(mut file) => {
+            let data = file.read_entire().await.unwrap_or_default();
+            let _ = file.close().await;
+            serde_json::from_slice::<serde_json::Value>(&data).unwrap_or_else(|_| json!({}))
+        }
+        Err(_) => json!({}),
+    };
+    io::emit(json!({ "event": "phone_status", "refreshed": refreshed }));
     Ok(())
 }
 

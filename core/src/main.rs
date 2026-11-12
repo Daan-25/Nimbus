@@ -7,6 +7,7 @@
 //!   nimbus-helper uninstall UDID BUNDLE_ID
 //!   nimbus-helper install       reads an install request from stdin, then answers prompts
 //!   nimbus-helper setup-phone UDID BUNDLE_ID [APPLE_ID]   gives Nimbus on the device its pairing file
+//!   nimbus-helper phone-status UDID BUNDLE_ID  prints what Nimbus on the device refreshed itself
 //!   nimbus-helper sync-phone UDID BUNDLE_ID    copies apps to Nimbus on the device; reads which from stdin
 //!   nimbus-helper pairing-file UDID PATH       saves a remote pairing file on this Mac
 //!   nimbus-helper crash-log UDID NAME          prints the device's newest crash report of an app

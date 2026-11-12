@@ -3,7 +3,11 @@ import UniformTypeIdentifiers
 
 @main
 struct NimbusApp: App {
-    @State private var model = PhoneModel()
+    @State private var model = PhoneModel.shared
+
+    init() {
+        BackgroundRefresh.register()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -25,6 +29,7 @@ struct ContentView: View {
                 connectionSection
                 accountSection
                 if model.isConnected || !model.library.isEmpty { appsSection }
+                if !model.library.isEmpty { automaticSection }
                 if !model.status.isEmpty { statusSection }
                 advancedSection
             }
@@ -158,6 +163,17 @@ struct ContentView: View {
             Text("Apps")
         } footer: {
             Text("Keep Nimbus open while it refreshes. Refreshing Nimbus itself closes it when it's done.")
+        }
+    }
+
+    private var automaticSection: some View {
+        @Bindable var model = model
+        return Section {
+            Toggle("Refresh apps automatically", isOn: $model.autoRefresh)
+        } footer: {
+            Text(model.rememberPassword
+                 ? "Nimbus refreshes your apps two days before they expire: when you open it, and in the background when iOS gives it time. LocalDevVPN has to be on. If it can't, you get a notification a day before they expire."
+                 : "Turn on Remember password so Nimbus can refresh on its own.")
         }
     }
 

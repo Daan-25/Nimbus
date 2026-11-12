@@ -84,6 +84,9 @@ cat > "$APP/Info.plist" <<PLIST
     <!-- The Mac puts the pairing file in Documents; this also shows the folder in the Files app. -->
     <key>UIFileSharingEnabled</key><true/>
     <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+    <!-- Refreshing in the background; the identifier is BackgroundRefresh.taskID. -->
+    <key>BGTaskSchedulerPermittedIdentifiers</key><array><string>io.github.daan-25.nimbus.refresh</string></array>
+    <key>UIBackgroundModes</key><array><string>processing</string></array>
     <key>NSLocalNetworkUsageDescription</key><string>Nimbus connects to this device through LocalDevVPN to install and refresh your apps.</string>
 </dict>
 </plist>

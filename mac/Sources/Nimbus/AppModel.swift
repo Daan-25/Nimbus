@@ -122,6 +122,7 @@ final class AppModel {
     /// Installed bundle ID of Nimbus for iPhone, when it still has to be set up after this install.
     private var phoneAppToSetUp: String?
     private var setupUDID: String?
+    private var lastPhoneStatus = Date.distantPast
     private var started = false
 
     private struct Job {
@@ -251,6 +252,7 @@ final class AppModel {
                         await refreshDeviceApps()
                         lastAppsCheck = .now
                     }
+                    await learnFromPhone()
                     autoRefreshIfNeeded()
                 }
                 // Nimbus can run for days, so look for app updates now and then.
@@ -490,6 +492,23 @@ final class AppModel {
     }
 
     // MARK: Automatic refresh
+
+    /// Nimbus on the device refreshes apps too. Asks it which, so this Mac doesn't sign in
+    /// to refresh apps that are fine.
+    private func learnFromPhone() async {
+        guard let udid = selectedUDID, Date.now.timeIntervalSince(lastPhoneStatus) > 10 * 60,
+              let phoneApp = libraryAppsOnDevice.first(where: { isPhoneApp($0) }), isInstalled(phoneApp) != false
+        else { return }
+        lastPhoneStatus = .now
+        guard let refreshed = try? await Helper.runOnce(["phone-status", udid, phoneApp.bundleID]).refreshed else { return }
+        for (bundleID, text) in refreshed {
+            guard let expires = try? Date(text, strategy: .iso8601),
+                  let index = library.firstIndex(where: { $0.deviceUDID == udid && $0.bundleID == bundleID }),
+                  expires > expiry(of: library[index])
+            else { continue }
+            library[index].expiresAt = expires
+        }
+    }
 
     private func autoRefreshIfNeeded() {
         guard autoRefresh, !isBusy, hasCredentials, !isRateLimited, selectedDevice != nil else { return }

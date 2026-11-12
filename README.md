@@ -37,7 +37,7 @@ You need Xcode (or the Command Line Tools) and [Rust](https://rustup.rs).
 open build/Nimbus.app
 ```
 
-The iPhone app is an early version. To build it, add the Rust
+The iPhone app refreshes the apps your Mac installed, without the Mac. To build it, add the Rust
 targets once with `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`. `build.sh` then puts the
 iPhone app inside the Mac app, which offers to install it. To build it on its own:
 
@@ -68,6 +68,10 @@ the apps it installed on that device. With the same key and identity, the iPhone
 certificate and Apple sees one machine; a free Apple ID has too few certificates for each to have its own.
 The iPhone app moves the keys out of Documents the first time it opens.
 
+Both refresh apps two days before they expire. The iPhone app does it when you open it and, when iOS
+gives it time, in the background; it needs LocalDevVPN on and warns you a day ahead if it couldn't. It
+records what it refreshed in `refreshed.json`, which the Mac reads so it doesn't sign in for the same apps.
+
 To try that connection from the Mac, over Wi-Fi:
 
 ```sh
@@ -92,7 +96,9 @@ downloading those needs a Patreon sign-in.
   - [x] The engine builds for iOS and connects through a remote pairing tunnel
   - [x] First iPhone app: shows the sideloaded apps on the device
   - [x] The Mac app installs the iPhone app and sets it up
-  - [ ] Sign in and refresh on the iPhone (built, not yet confirmed on a device)
+  - [x] Sign in and refresh on the iPhone
+  - [ ] Refresh in the background on the iPhone (built; iOS decides when it runs, so not yet seen working)
+  - [ ] Install from sources on the iPhone, and enable JIT
 
 ## Credits
 

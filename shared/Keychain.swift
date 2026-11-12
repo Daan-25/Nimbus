@@ -22,12 +22,16 @@ enum Keychain {
 
     static func save(_ password: String, for account: String) {
         delete(for: account)
-        let item: [String: Any] = [
+        var item: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecValueData as String: Data(password.utf8),
         ]
+        #if os(iOS)
+        // A background refresh can run while the device is locked.
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        #endif
         SecItemAdd(item as CFDictionary, nil)
     }
 
