@@ -37,15 +37,29 @@ You need Xcode (or the Command Line Tools) and [Rust](https://rustup.rs).
 open build/Nimbus.app
 ```
 
+The iPhone app is an early version that only shows your sideloaded apps. To build it, add the Rust
+targets once with `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`, then:
+
+```sh
+./scripts/build-ios.sh        # build/Nimbus-iOS.ipa, unsigned: install it with Nimbus on your Mac
+./scripts/build-ios.sh sim    # build/ios-simulator/Nimbus.app, for the iOS Simulator
+```
+
 ## How it works
 
 | Part | What it does |
 | --- | --- |
-| `mac/` | SwiftUI app |
-| `core/` | `nimbus-helper`, a Rust binary that signs in to Apple, signs the app and installs it. Built on [isideload](https://github.com/nab138/isideload) and [idevice](https://github.com/jkcoxson/idevice). |
+| `mac/` | SwiftUI app for the Mac |
+| `ios/` | SwiftUI app for iPhone and iPad |
+| `shared/` | Swift code both apps use |
+| `core/` | The engine, in Rust: signs in to Apple, signs the app and installs it. Built on [isideload](https://github.com/nab138/isideload) and [idevice](https://github.com/jkcoxson/idevice). |
 
-The app and the helper exchange JSON lines over stdin and stdout. Run `nimbus-helper client-info` to see
-what Nimbus reports to Apple.
+Both apps exchange JSON messages with the engine. The Mac app runs it as a separate tool, `nimbus-helper`,
+over stdin and stdout. The iPhone app links it and calls the C functions in `core/include/nimbus_core.h`.
+Run `nimbus-helper client-info` to see what Nimbus reports to Apple.
+
+An iPhone app can't talk to its own device directly, so on the iPhone the engine connects through a
+loopback VPN (LocalDevVPN, from the App Store) with a pairing file from your Mac.
 
 Nimbus keeps a copy of every app you install in `~/Library/Application Support/Nimbus`, so it can refresh
 them later. The sources you added are cached in `sources.json` in the same folder.
@@ -61,6 +75,10 @@ downloading those needs a Patreon sign-in.
 - [x] Refresh over Wi-Fi
 - [x] AltStore sources: browse, install and update apps
 - [ ] iOS app: refresh without a Mac, and enable JIT
+  - [x] The engine builds for iOS and connects with a pairing file
+  - [x] First iPhone app: shows the sideloaded apps on the device
+  - [ ] The Mac app installs the iPhone app and sets it up
+  - [ ] Sign in and refresh on the iPhone
 
 ## Credits
 

@@ -1,12 +1,19 @@
 [package]
-name = "nimbus-helper"
+name = "nimbus-core"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+name = "nimbus_core"
+
+[[bin]]
+name = "nimbus-helper"
+path = "src/main.rs"
 
 [dependencies]
 rootcause = "0.12"
 anyhow = "1.0.104"
-idevice = { version = "0.1.68", default-features = false, features = ["usbmuxd", "ring"] }
+idevice = { version = "0.1.68", default-features = false, features = ["usbmuxd", "tcp", "heartbeat", "ring"] }
 isideload = "0.5.2"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1.0.229", features = ["derive"] }
