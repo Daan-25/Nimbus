@@ -3,7 +3,8 @@
 Nimbus installs apps on your iPhone or iPad with a free Apple ID: no jailbreak, no paid developer account.
 It's an alternative to AltStore and SideStore, built to remove the parts that get in the way.
 
-> **Status:** early. The Mac app installs apps from AltStore sources or `.ipa` files and refreshes them. See the [roadmap](#roadmap).
+> **Status:** in development. The Mac app and the iPhone app both install and refresh apps, but there's no
+> release to download yet: you build Nimbus yourself. See the [roadmap](#roadmap).
 
 ## Why Nimbus
 
@@ -52,7 +53,7 @@ iPhone app inside the Mac app, which offers to install it. To build it on its ow
 | --- | --- |
 | `mac/` | SwiftUI app for the Mac |
 | `ios/` | SwiftUI app for iPhone and iPad |
-| `shared/` | Swift code both apps use |
+| `shared/` | Swift code both apps use, such as reading sources |
 | `core/` | The engine, in Rust: signs in to Apple, signs the app and installs it. Built on [isideload](https://github.com/nab138/isideload) and [idevice](https://github.com/jkcoxson/idevice). |
 
 Both apps exchange JSON messages with the engine. The Mac app runs it as a separate tool, `nimbus-helper`,
@@ -73,7 +74,7 @@ gives it time, in the background; it needs LocalDevVPN on and warns you a day ah
 records what it refreshed in `refreshed.json`, which the Mac reads so it doesn't sign in for the same apps.
 
 Apps the iPhone installs itself, from an `.ipa` you pick or open with Nimbus, are kept in a list of their
-own, apart from the one the Mac copies over. The Mac shows them as installed with another tool.
+own, apart from the one the Mac copies over. The Mac shows them as looked after by Nimbus on the device.
 
 To try that connection from the Mac, over Wi-Fi:
 
@@ -102,7 +103,8 @@ downloading those needs a Patreon sign-in.
   - [x] Sign in and refresh on the iPhone
   - [ ] Refresh in the background on the iPhone (built; iOS decides when it runs, so not yet seen working)
   - [x] Install `.ipa` files on the iPhone and remove apps there
-  - [ ] Install from sources on the iPhone, and enable JIT
+  - [x] Browse and install apps from sources on the iPhone
+  - [ ] Enable JIT
 
 ## Credits
 

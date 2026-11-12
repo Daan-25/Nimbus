@@ -50,6 +50,8 @@ final class AppModel {
         didSet {
             if oldValue != selectedUDID {
                 deviceApps = nil
+                phoneManagedApps = [:]
+                lastPhoneStatus = .distantPast
                 Task { await refreshDeviceApps() }
             }
         }
@@ -123,6 +125,8 @@ final class AppModel {
     private var phoneAppToSetUp: String?
     private var setupUDID: String?
     private var lastPhoneStatus = Date.distantPast
+    /// When apps expire that Nimbus on the selected device installed and looks after itself, by bundle ID.
+    var phoneManagedApps: [String: Date] = [:]
     private var started = false
 
     private struct Job {
@@ -500,7 +504,16 @@ final class AppModel {
               let phoneApp = libraryAppsOnDevice.first(where: { isPhoneApp($0) }), isInstalled(phoneApp) != false
         else { return }
         lastPhoneStatus = .now
-        guard let refreshed = try? await Helper.runOnce(["phone-status", udid, phoneApp.bundleID]).refreshed else { return }
+        guard let status = try? await Helper.runOnce(["phone-status", udid, phoneApp.bundleID]), selectedUDID == udid else { return }
+        let refreshed = status.refreshed ?? [:]
+
+        var managed: [String: Date] = [:]
+        for app in status.local ?? [] {
+            let dates = [app.expiresAt, refreshed[app.bundleID]].compactMap { $0.flatMap { try? Date($0, strategy: .iso8601) } }
+            managed[app.bundleID] = dates.max() ?? .distantPast
+        }
+        phoneManagedApps = managed
+
         for (bundleID, text) in refreshed {
             guard let expires = try? Date(text, strategy: .iso8601),
                   let index = library.firstIndex(where: { $0.deviceUDID == udid && $0.bundleID == bundleID }),

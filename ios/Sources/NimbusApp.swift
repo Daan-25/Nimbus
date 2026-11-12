@@ -25,19 +25,41 @@ struct ContentView: View {
     /// The app the user is about to remove from the device.
     @State private var removing: DeviceApp?
     @State private var showLog = false
+    @State private var tab = Tab.apps
+
+    private enum Tab {
+        case apps, browse, settings
+    }
 
     var body: some View {
-        NavigationStack {
-            List {
-                connectionSection
-                accountSection
-                if model.isConnected || !model.library.isEmpty { appsSection }
-                if !model.library.isEmpty { automaticSection }
-                if !model.status.isEmpty { statusSection }
-                advancedSection
+        TabView(selection: $tab) {
+            NavigationStack {
+                List {
+                    connectionSection
+                    if !model.hasCredentials { accountHint }
+                    if model.isConnected || !model.refreshableApps.isEmpty { appsSection }
+                    if !model.status.isEmpty { statusSection }
+                }
+                .navigationTitle("Nimbus")
+                .refreshable { await model.check() }
             }
-            .navigationTitle("Nimbus")
-            .refreshable { await model.check() }
+            .tabItem { Label("Apps", systemImage: "square.grid.2x2") }
+            .tag(Tab.apps)
+
+            BrowseView()
+                .tabItem { Label("Browse", systemImage: "shippingbox") }
+                .tag(Tab.browse)
+
+            NavigationStack {
+                List {
+                    accountSection
+                    automaticSection
+                    advancedSection
+                }
+                .navigationTitle("Settings")
+            }
+            .tabItem { Label("Settings", systemImage: "gear") }
+            .tag(Tab.settings)
         }
         .task {
             model.start()
@@ -124,6 +146,27 @@ struct ContentView: View {
         }
     }
 
+    /// Shown on the Apps tab until there's an account to sign in with.
+    private var accountHint: some View {
+        Section {
+            Button {
+                tab = .settings
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Enter your Apple ID")
+                        Text("Nimbus needs it to install and refresh apps. It's under Settings.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "person.crop.circle.badge.exclamationmark")
+                }
+            }
+            .foregroundStyle(.primary)
+        }
+    }
+
     private var accountSection: some View {
         @Bindable var model = model
         return Section {
@@ -157,9 +200,16 @@ struct ContentView: View {
                         expiry(of: app).font(.caption)
                     }
                     Spacer()
-                    Button("Refresh") { model.refresh([app]) }
-                        .buttonStyle(.bordered)
-                        .disabled(model.isBusy || !model.isConnected)
+                    // Updating signs the app again, so it also refreshes it.
+                    if let update = model.update(for: app) {
+                        Button("Update") { model.install(update.app, from: update.source) }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.isBusy || !model.isConnected)
+                    } else {
+                        Button("Refresh") { model.refresh([app]) }
+                            .buttonStyle(.bordered)
+                            .disabled(model.isBusy || !model.isConnected)
+                    }
                 }
                 .swipeActions {
                     // Removing Nimbus from inside Nimbus would cut off the branch it sits on.
@@ -199,7 +249,7 @@ struct ContentView: View {
                 }
             }
         } footer: {
-            Text("Add an .ipa file from this device, or open one with Nimbus from Files or Safari. Swipe an app to remove it. Keep Nimbus open while it works; refreshing Nimbus itself closes it when it's done.")
+            Text("Find apps under Browse, add an .ipa file from this device, or open one with Nimbus from Files or Safari. Swipe an app to remove it. Keep Nimbus open while it works; refreshing Nimbus itself closes it when it's done.")
         }
     }
 
@@ -212,6 +262,8 @@ struct ContentView: View {
         @Bindable var model = model
         return Section {
             Toggle("Refresh apps automatically", isOn: $model.autoRefresh)
+        } header: {
+            Text("Automatic refresh")
         } footer: {
             Text(model.rememberPassword
                  ? "Nimbus refreshes your apps two days before they expire: when you open it, and in the background when iOS gives it time. LocalDevVPN has to be on. If it can't, you get a notification a day before they expire."

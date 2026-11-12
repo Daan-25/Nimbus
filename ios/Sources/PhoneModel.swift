@@ -16,6 +16,8 @@ enum Library {
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }()
+    /// Where the shared code keeps the cache of sources.
+    static var folder: URL { support }
     static let pairingFile = support.appendingPathComponent("rp_pairing.plist")
     static let identityFile = support.appendingPathComponent("identity.json")
     /// The engine's signing key and the state that identifies the Mac to Apple.
@@ -171,6 +173,23 @@ final class PhoneModel {
         }
     }
 
+    // MARK: Sources
+
+    var sources = SourceLoader.loadCache() {
+        didSet { SourceLoader.saveCache(sources) }
+    }
+    /// Why a source couldn't be reloaded, by source address.
+    var sourceErrors: [URL: String] = [:]
+    var isLoadingSources = false
+    private var lastSourcesReload = Date.distantPast
+    private var download: Download?
+    /// Identifies the running download, so a cancelled one can't continue into an install.
+    private var downloadID: UUID?
+
+    enum SourceAppState {
+        case available, installed, updateAvailable
+    }
+
     // MARK: Automatic refresh
 
     var autoRefresh = UserDefaults.standard.object(forKey: "autoRefresh") as? Bool ?? true {
@@ -204,12 +223,21 @@ final class PhoneModel {
         let name: String
         /// Set when refreshing an app that's already known; nil for a new .ipa.
         let existing: LibraryApp?
+        /// Set when installing an app from a source.
+        var origin: Origin?
 
         var ipaURL: URL { Library.ipaFolder.appendingPathComponent(ipaFile) }
     }
     private var isChecking = false
     private var started = false
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
+
+    private struct Origin {
+        let sourceURL: URL
+        let bundleID: String
+        let version: String?
+        let iconURL: URL?
+    }
 
     // MARK: Derived state
 
@@ -317,6 +345,9 @@ final class PhoneModel {
             deviceApps = try await Engine.runOnce("apps", args: [device.udid]).apps ?? []
             error = nil
             scheduleNextRefresh()
+            if Date.now.timeIntervalSince(lastSourcesReload) > Self.autoRefreshInterval {
+                Task { await reloadSources() }
+            }
             if refreshIfDue, canAutoRefresh {
                 lastAutoRefresh = .now
                 refresh(refreshableApps)
@@ -430,22 +461,149 @@ final class PhoneModel {
         phase = .idle
         let name = info.name ?? url.deletingPathExtension().lastPathComponent
 
-        let systemVersion = UIDevice.current.systemVersion
-        if let needed = info.minimumOs, needed.compare(systemVersion, options: .numeric) == .orderedDescending {
+        if let problem = problem(installing: name, bundleID: info.bundleId, minimumOS: info.minimumOs) {
             Library.deleteIPA(ipaFile)
-            return fail("\(name) needs iOS \(needed) or later. This device has iOS \(systemVersion).")
-        }
-        // An app that's already installed is replaced, so it doesn't need a free slot.
-        if let teamID, let used = usedAppSlots, let bundleID = info.bundleId {
-            let installedID = "\(bundleID).\(teamID)"
-            let alreadyInstalled = deviceApps?.contains { $0.bundleId == installedID } ?? false
-            if !alreadyInstalled && used >= Self.freeAppSlots {
-                Library.deleteIPA(ipaFile)
-                return fail("All \(Self.freeAppSlots) app slots on this device are in use. Remove an app first.")
-            }
+            return fail(problem)
         }
 
         await run([Job(ipaFile: ipaFile, name: name, existing: nil)], automatic: false)
+    }
+
+    /// Says why an app can't be installed on this device, to find out before signing in for it.
+    private func problem(installing name: String, bundleID: String?, minimumOS: String?) -> String? {
+        let systemVersion = UIDevice.current.systemVersion
+        if let minimumOS, minimumOS.compare(systemVersion, options: .numeric) == .orderedDescending {
+            return "\(name) needs iOS \(minimumOS) or later. This device has iOS \(systemVersion)."
+        }
+        // An app that's already installed is replaced, so it doesn't need a free slot.
+        if let teamID, let used = usedAppSlots, let bundleID {
+            let installedID = "\(bundleID).\(teamID)"
+            let alreadyInstalled = deviceApps?.contains { $0.bundleId == installedID } ?? false
+            if !alreadyInstalled && used >= Self.freeAppSlots {
+                return "All \(Self.freeAppSlots) app slots on this device are in use. Remove an app first."
+            }
+        }
+        return nil
+    }
+
+    // MARK: Sources
+
+    func state(of app: SourceApp, in source: Source) -> SourceAppState {
+        let mine = refreshableApps.first { $0.sourceBundleID == app.bundleID && $0.sourceURL == source.url }
+        if let mine {
+            return mine.sourceVersion == app.versionKey ? .installed : .updateAvailable
+        }
+        if let teamID, deviceApps?.contains(where: { $0.bundleId == "\(app.bundleID).\(teamID)" }) == true {
+            return .installed
+        }
+        return .available
+    }
+
+    /// The newer release of an app that was installed from a source, if there is one.
+    func update(for app: LibraryApp) -> (source: Source, app: SourceApp)? {
+        guard let url = app.sourceURL, let bundleID = app.sourceBundleID,
+              let source = sources.first(where: { $0.url == url }),
+              let latest = source.apps.first(where: { $0.bundleID == bundleID }),
+              latest.versionKey != app.sourceVersion
+        else { return nil }
+        return (source, latest)
+    }
+
+    /// Downloads an app from a source and installs it. Also used to update an installed app.
+    func install(_ app: SourceApp, from source: Source) {
+        guard !isBusy else { return }
+        guard hasCredentials else {
+            return fail("Enter your Apple ID and password first.")
+        }
+        guard isConnected else {
+            return fail("Turn on LocalDevVPN first.")
+        }
+        if let problem = problem(installing: app.name, bundleID: app.bundleID, minimumOS: app.minOSVersion) {
+            return fail(problem)
+        }
+
+        try? FileManager.default.createDirectory(at: Library.ipaFolder, withIntermediateDirectories: true)
+        let ipaFile = "local-\(UUID().uuidString).ipa"
+        let id = UUID()
+        downloadID = id
+        phase = .working
+        status = "Downloading \(app.name)…"
+        progress = 0
+        log = []
+        UIApplication.shared.isIdleTimerDisabled = true
+        download = Download(
+            app.downloadURL,
+            to: Library.ipaFolder.appendingPathComponent(ipaFile),
+            onProgress: { [weak self] in
+                if self?.downloadID == id { self?.progress = $0 }
+            },
+            completion: { [weak self] result in
+                Task { await self?.downloaded(result, id: id, ipaFile: ipaFile, app: app, source: source) }
+            }
+        )
+    }
+
+    private func downloaded(_ result: Result<Void, Error>, id: UUID, ipaFile: String, app: SourceApp, source: Source) async {
+        let file = Library.ipaFolder.appendingPathComponent(ipaFile)
+        // Cancelled while downloading.
+        guard downloadID == id else { return Library.deleteIPA(ipaFile) }
+        download = nil
+        UIApplication.shared.isIdleTimerDisabled = false
+        if case .failure(let error) = result {
+            downloadID = nil
+            return fail("Couldn't download \(app.name): \(error.localizedDescription)")
+        }
+        status = "Checking \(app.name)…"
+        progress = nil
+        if let expected = app.sha256 {
+            let actual = await Library.sha256(of: file)
+            // Cancelled while checking.
+            guard downloadID == id else { return Library.deleteIPA(ipaFile) }
+            guard actual == expected else {
+                downloadID = nil
+                Library.deleteIPA(ipaFile)
+                return fail("The download of \(app.name) doesn't match the checksum in its source, so Nimbus didn't install it.")
+            }
+        }
+        let valid = (try? await Engine.runOnce("inspect", args: [file.path])) != nil
+        guard downloadID == id else { return Library.deleteIPA(ipaFile) }
+        downloadID = nil
+        guard valid else {
+            Library.deleteIPA(ipaFile)
+            return fail("The download of \(app.name) isn't a valid app (.ipa) file.")
+        }
+        phase = .idle
+        let origin = Origin(sourceURL: source.url, bundleID: app.bundleID, version: app.versionKey, iconURL: app.iconURL)
+        await run([Job(ipaFile: ipaFile, name: app.name, existing: nil, origin: origin)], automatic: false)
+    }
+
+    func addSource(_ url: URL) async throws {
+        guard !sources.contains(where: { $0.url == url }) else { return }
+        let source = try await SourceLoader.load(url)
+        if !sources.contains(where: { $0.url == url }) { sources.append(source) }
+    }
+
+    func removeSource(_ source: Source) {
+        sources.removeAll { $0.url == source.url }
+        sourceErrors[source.url] = nil
+    }
+
+    func reloadSources() async {
+        guard !isLoadingSources else { return }
+        isLoadingSources = true
+        defer { isLoadingSources = false }
+        lastSourcesReload = .now
+        for url in sources.map(\.url) {
+            do {
+                let fresh = try await SourceLoader.load(url)
+                // The source can be removed while it loads.
+                guard let index = sources.firstIndex(where: { $0.url == url }) else { continue }
+                if sources[index] != fresh { sources[index] = fresh }
+                sourceErrors[url] = nil
+            } catch {
+                if sources.contains(where: { $0.url == url }) { sourceErrors[url] = error.localizedDescription }
+            }
+        }
     }
 
     /// Removes an app from this device, which frees its slot. Its data goes with it.
@@ -600,6 +758,10 @@ final class PhoneModel {
 
     func cancel() {
         Engine.cancel()
+        if download != nil { UIApplication.shared.isIdleTimerDisabled = false }
+        download?.cancel()
+        download = nil
+        downloadID = nil
         twoFactor = nil
         teams = nil
         certificates = nil
@@ -732,7 +894,11 @@ final class PhoneModel {
             version: event.version,
             ipaFile: job.ipaFile,
             installedAt: .now,
-            expiresAt: expires
+            expiresAt: expires,
+            sourceURL: job.origin?.sourceURL,
+            sourceBundleID: job.origin?.bundleID,
+            sourceVersion: job.origin?.version,
+            iconURL: job.origin?.iconURL
         ))
         refreshedUntil[bundleID] = expires
     }

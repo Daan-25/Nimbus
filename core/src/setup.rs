@@ -23,6 +23,8 @@ const LIBRARY_FILE: &str = "/Documents/library.json";
 const IPA_FOLDER: &str = "/Documents/IPAs";
 /// Written by Nimbus on the device: until when the apps it refreshed itself keep working.
 const REFRESHED_FILE: &str = "/Documents/refreshed.json";
+/// Written by Nimbus on the device: the apps it installed itself from .ipa files.
+const LOCAL_LIBRARY_FILE: &str = "/Documents/local-library.json";
 /// The lockdown pairing file of earlier versions, which devices no longer accept from themselves.
 const OLD_PAIRING_FILE: &str = "/Documents/pairing.plist";
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(60);
@@ -192,8 +194,9 @@ pub async fn sync_phone(udid: &str, bundle_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reports which apps Nimbus on the device refreshed itself, so this Mac doesn't refresh
-/// them again: {"event": "phone_status", "refreshed": {"<bundle ID>": "<expiry date>"}}.
+/// Reports what Nimbus on the device did on its own, so this Mac doesn't refresh apps that are
+/// fine and can tell which apps the device looks after:
+/// {"event": "phone_status", "refreshed": {"<bundle ID>": "<expiry date>"}, "local": [<app>, ...]}.
 pub async fn phone_status(udid: &str, bundle_id: &str) -> Result<()> {
     let provider = device::usb_provider(udid).await?;
     let mut documents = HouseArrestClient::connect(&provider as &dyn IdeviceProvider)
@@ -203,17 +206,24 @@ pub async fn phone_status(udid: &str, bundle_id: &str) -> Result<()> {
         .await
         .map_err(|e| anyhow!("Can't open Nimbus on your device. Is it installed? ({e})"))?;
 
-    // No file means the device hasn't refreshed anything yet.
-    let refreshed = match documents.open(REFRESHED_FILE, AfcFopenMode::RdOnly).await {
-        Ok(mut file) => {
-            let data = file.read_entire().await.unwrap_or_default();
-            let _ = file.close().await;
-            serde_json::from_slice::<serde_json::Value>(&data).unwrap_or_else(|_| json!({}))
-        }
-        Err(_) => json!({}),
-    };
-    io::emit(json!({ "event": "phone_status", "refreshed": refreshed }));
+    // No file means the device hasn't done that yet.
+    let refreshed = read_json(&mut documents, REFRESHED_FILE)
+        .await
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let local = read_json(&mut documents, LOCAL_LIBRARY_FILE)
+        .await
+        .filter(serde_json::Value::is_array)
+        .unwrap_or_else(|| json!([]));
+    io::emit(json!({ "event": "phone_status", "refreshed": refreshed, "local": local }));
     Ok(())
+}
+
+async fn read_json(documents: &mut AfcClient, path: &str) -> Option<serde_json::Value> {
+    let mut file = documents.open(path, AfcFopenMode::RdOnly).await.ok()?;
+    let data = file.read_entire().await.ok();
+    let _ = file.close().await;
+    serde_json::from_slice(&data?).ok()
 }
 
 /// Saves a remote pairing file on this Mac, to try the connection the iPhone app makes.

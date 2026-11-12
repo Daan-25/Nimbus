@@ -28,6 +28,8 @@ struct HelperEvent: Decodable, Sendable {
     var appIdsAvailable: Int?
     /// Expiry dates of the apps Nimbus on the device refreshed itself, by bundle ID.
     var refreshed: [String: String]?
+    /// The apps Nimbus on the device installed itself.
+    var local: [PhoneApp]?
     /// The lowest iOS version an inspected IPA runs on.
     var minimumOs: String?
 
@@ -51,6 +53,13 @@ struct DeviceApp: Decodable, Hashable, Identifiable, Sendable {
     let name: String
     let version: String?
     var id: String { bundleId }
+}
+
+/// An app Nimbus on the device installed itself, as it lists them in local-library.json.
+struct PhoneApp: Decodable, Hashable, Sendable {
+    let bundleID: String
+    let name: String
+    let expiresAt: String?
 }
 
 struct TrustedNumber: Decodable, Hashable, Identifiable, Sendable {

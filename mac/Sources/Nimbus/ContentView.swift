@@ -152,7 +152,7 @@ struct ContentView: View {
                         .frame(width: 30)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Nimbus for \(model.selectedDevice?.name ?? "your device")")
-                        Text("See your apps on the device itself. Early version; uses one app slot and needs a cable to set up.")
+                        Text("Install and refresh apps on the device itself, without this Mac. Uses one app slot.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -316,16 +316,38 @@ private struct OtherAppRow: View {
     @Environment(AppModel.self) private var model
     let app: DeviceApp
 
+    /// Set when Nimbus on the device installed this app and refreshes it there.
+    private var managedUntil: Date? {
+        model.phoneManagedApps[app.bundleId]
+    }
+
+    @ViewBuilder private var detail: some View {
+        if let expires = managedUntil {
+            // The device didn't say when it expires.
+            if expires == .distantPast {
+                Text("Installed by Nimbus on the device, which refreshes it.").foregroundStyle(.secondary)
+            } else if expires < .now {
+                Text("Installed by Nimbus on the device. Expired; refresh it there.").foregroundStyle(.red)
+            } else {
+                Text("Installed by Nimbus on the device, which refreshes it. Expires \(expires.formatted(.relative(presentation: .named)))")
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            Text("Installed with another tool. Add its .ipa to refresh it with Nimbus.")
+                .foregroundStyle(.secondary)
+        }
+    }
+
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "app.dashed")
+            Image(systemName: managedUntil == nil ? "app.dashed" : "iphone")
                 .font(.title)
                 .foregroundStyle(.secondary)
+                .frame(width: 30)
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name)
-                Text("Installed with another tool. Add its .ipa to refresh it with Nimbus.")
+                detail
                     .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             Spacer()
             Menu {
