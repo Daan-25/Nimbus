@@ -28,6 +28,36 @@ enum Library {
         return (try? decoder.decode([LibraryApp].self, from: data)) ?? []
     }
 
+    /// Apps this device installed itself. The Mac's list is replaced whenever the Mac copies
+    /// its apps over, so these are kept apart; the Mac also leaves IPAs named local-… alone.
+    private static let localFile = documents.appendingPathComponent("local-library.json")
+
+    static func loadLocal() -> [LibraryApp] {
+        guard let data = try? Data(contentsOf: localFile) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode([LibraryApp].self, from: data)) ?? []
+    }
+
+    static func saveLocal(_ apps: [LibraryApp]) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try? encoder.encode(apps).write(to: localFile, options: .atomic)
+    }
+
+    /// Copies an IPA the user picked into Nimbus's own folder, so it can be refreshed later.
+    static func importIPA(_ url: URL) throws -> String {
+        try FileManager.default.createDirectory(at: ipaFolder, withIntermediateDirectories: true)
+        let name = "local-\(UUID().uuidString).ipa"
+        try FileManager.default.copyItem(at: url, to: ipaFolder.appendingPathComponent(name))
+        return name
+    }
+
+    static func deleteIPA(_ name: String) {
+        try? FileManager.default.removeItem(at: ipaFolder.appendingPathComponent(name))
+    }
+
     /// Tells the Mac which apps this device refreshed itself and until when they work, so the
     /// Mac doesn't refresh them again. The Mac reads this file.
     static func saveRefreshed(_ expiries: [String: Date]) {
@@ -120,8 +150,19 @@ final class PhoneModel {
 
     // MARK: Apps
 
+    /// A free Apple ID can have this many sideloaded apps on a device at once.
+    static let freeAppSlots = 3
+
     /// The apps the Mac installed on this device, with the IPAs it copied over.
     var library: [LibraryApp] = []
+    /// The apps this device installed itself, from .ipa files.
+    var localLibrary = Library.loadLocal() {
+        didSet { Library.saveLocal(localLibrary) }
+    }
+    /// The developer team of the Apple ID, known after the first sign-in on this device.
+    private var teamID = UserDefaults.standard.string(forKey: "teamID") {
+        didSet { defaults.set(teamID, forKey: "teamID") }
+    }
     /// When apps expire that this device refreshed itself, by bundle ID. The Mac's list doesn't know.
     private var refreshedUntil = UserDefaults.standard.dictionary(forKey: "refreshedUntil") as? [String: Date] ?? [:] {
         didSet {
@@ -155,8 +196,17 @@ final class PhoneModel {
     var teams: [Team]?
     var certificates: [Certificate]?
 
-    private var jobs: [LibraryApp] = []
+    private var jobs: [Job] = []
     private var jobsFailed = 0
+
+    private struct Job {
+        let ipaFile: String
+        let name: String
+        /// Set when refreshing an app that's already known; nil for a new .ipa.
+        let existing: LibraryApp?
+
+        var ipaURL: URL { Library.ipaFolder.appendingPathComponent(ipaFile) }
+    }
     private var isChecking = false
     private var started = false
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
@@ -182,9 +232,29 @@ final class PhoneModel {
         return false
     }
 
-    /// Apps Nimbus can refresh: on the Mac's list, with their IPA here, and still on the device.
+    /// The Mac's apps and this device's own. When both know an app, the newer install counts.
+    private var knownApps: [LibraryApp] {
+        var byBundleID: [String: LibraryApp] = [:]
+        for app in library + localLibrary {
+            if let other = byBundleID[app.bundleID], other.installedAt > app.installedAt { continue }
+            byBundleID[app.bundleID] = app
+        }
+        return Array(byBundleID.values)
+    }
+
+    func isLocal(_ app: LibraryApp) -> Bool {
+        localLibrary.contains { $0.ipaFile == app.ipaFile }
+    }
+
+    /// Apps on this device signed by this Apple ID; nil when that isn't known yet.
+    var usedAppSlots: Int? {
+        guard let teamID, let deviceApps else { return nil }
+        return deviceApps.filter { $0.bundleId.contains(teamID) }.count
+    }
+
+    /// Apps Nimbus can refresh: known, with their IPA here, and still on the device.
     var refreshableApps: [LibraryApp] {
-        library
+        knownApps
             .filter { FileManager.default.fileExists(atPath: $0.ipaURL.path) }
             .filter { app in deviceApps?.contains { $0.bundleId == app.bundleID } ?? true }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -201,8 +271,8 @@ final class PhoneModel {
         return max(fromMac, refreshedUntil[app.bundleID] ?? .distantPast)
     }
 
-    private func isNimbusItself(_ app: LibraryApp) -> Bool {
-        app.bundleID == Bundle.main.bundleIdentifier
+    private func isNimbusItself(_ app: LibraryApp?) -> Bool {
+        app != nil && app?.bundleID == Bundle.main.bundleIdentifier
     }
 
     // MARK: Lifecycle
@@ -225,6 +295,7 @@ final class PhoneModel {
 
         Library.takeInHandoff()
         library = Library.load()
+        dropSupersededLocalApps()
 
         guard hasPairingFile else {
             connection = .noPairingFile
@@ -312,7 +383,101 @@ final class PhoneModel {
     }
 
     func refresh(_ apps: [LibraryApp]) {
-        Task { await runRefresh(apps, automatic: false) }
+        Task { await run(jobs(for: apps), automatic: false) }
+    }
+
+    private func jobs(for apps: [LibraryApp]) -> [Job] {
+        // Refreshing Nimbus itself restarts it, so it goes last.
+        let ordered = apps.filter { !isNimbusItself($0) } + apps.filter { isNimbusItself($0) }
+        return ordered.map { Job(ipaFile: $0.ipaFile, name: $0.name, existing: $0) }
+    }
+
+    // MARK: Installing
+
+    /// Installs an .ipa file from this device: one the user picked, or opened with Nimbus.
+    func add(_ url: URL) {
+        Task { await install(url) }
+    }
+
+    private func install(_ url: URL) async {
+        guard !isBusy else { return }
+        guard hasCredentials else {
+            return fail("Enter your Apple ID and password first.")
+        }
+        guard isConnected else {
+            return fail("Turn on LocalDevVPN first.")
+        }
+
+        let access = url.startAccessingSecurityScopedResource()
+        let copied = Result { try Library.importIPA(url) }
+        if access { url.stopAccessingSecurityScopedResource() }
+        guard case .success(let ipaFile) = copied else {
+            return fail("Couldn't read \(url.lastPathComponent).")
+        }
+        let ipaURL = Library.ipaFolder.appendingPathComponent(ipaFile)
+
+        // Check the file before signing in for it.
+        phase = .working
+        status = "Checking \(url.lastPathComponent)…"
+        progress = nil
+        let info: HelperEvent
+        do {
+            info = try await Engine.runOnce("inspect", args: [ipaURL.path])
+        } catch {
+            Library.deleteIPA(ipaFile)
+            return fail("\(url.lastPathComponent) isn't a valid app (.ipa) file.")
+        }
+        phase = .idle
+        let name = info.name ?? url.deletingPathExtension().lastPathComponent
+
+        let systemVersion = UIDevice.current.systemVersion
+        if let needed = info.minimumOs, needed.compare(systemVersion, options: .numeric) == .orderedDescending {
+            Library.deleteIPA(ipaFile)
+            return fail("\(name) needs iOS \(needed) or later. This device has iOS \(systemVersion).")
+        }
+        // An app that's already installed is replaced, so it doesn't need a free slot.
+        if let teamID, let used = usedAppSlots, let bundleID = info.bundleId {
+            let installedID = "\(bundleID).\(teamID)"
+            let alreadyInstalled = deviceApps?.contains { $0.bundleId == installedID } ?? false
+            if !alreadyInstalled && used >= Self.freeAppSlots {
+                Library.deleteIPA(ipaFile)
+                return fail("All \(Self.freeAppSlots) app slots on this device are in use. Remove an app first.")
+            }
+        }
+
+        await run([Job(ipaFile: ipaFile, name: name, existing: nil)], automatic: false)
+    }
+
+    /// Removes an app from this device, which frees its slot. Its data goes with it.
+    func uninstall(bundleID: String, name: String) {
+        guard !isBusy, case .connected(let device) = connection else { return }
+        phase = .working
+        status = "Removing \(name)…"
+        progress = nil
+        Task {
+            do {
+                _ = try await Engine.runOnce("uninstall", args: [device.udid, bundleID])
+                for app in localLibrary where app.bundleID == bundleID { Library.deleteIPA(app.ipaFile) }
+                localLibrary.removeAll { $0.bundleID == bundleID }
+                refreshedUntil[bundleID] = nil
+                phase = .done
+                status = "\(name) is removed."
+            } catch {
+                fail(error.localizedDescription)
+            }
+            await check(refreshIfDue: false)
+        }
+    }
+
+    /// The Mac installed a newer copy of an app this device had added itself: the Mac's counts,
+    /// so the device's copy can go.
+    private func dropSupersededLocalApps() {
+        let superseded = localLibrary.filter { local in
+            library.contains { $0.bundleID == local.bundleID && $0.installedAt > local.installedAt }
+        }
+        guard !superseded.isEmpty else { return }
+        for app in superseded { Library.deleteIPA(app.ipaFile) }
+        localLibrary.removeAll { local in superseded.contains { $0.ipaFile == local.ipaFile } }
     }
 
     // MARK: Automatic refresh
@@ -362,14 +527,14 @@ final class PhoneModel {
             return false
         }
         lastAutoRefresh = .now
-        await runRefresh(refreshableApps, automatic: true)
+        await run(jobs(for: refreshableApps), automatic: true)
         return phase == .done
     }
 
     // MARK: Running the engine
 
-    private func runRefresh(_ apps: [LibraryApp], automatic: Bool) async {
-        guard !isBusy, !apps.isEmpty else { return }
+    private func run(_ jobs: [Job], automatic: Bool) async {
+        guard !isBusy, !jobs.isEmpty else { return }
         guard hasCredentials else {
             return fail("Enter your Apple ID and password first.")
         }
@@ -377,8 +542,7 @@ final class PhoneModel {
             return fail("Turn on LocalDevVPN first.")
         }
         isAutomatic = automatic
-        // Refreshing Nimbus itself restarts it, so it goes last.
-        jobs = apps.filter { !isNimbusItself($0) } + apps.filter(isNimbusItself)
+        self.jobs = jobs
         jobsFailed = 0
         phase = .working
         status = "Starting…"
@@ -417,6 +581,10 @@ final class PhoneModel {
             } else if phase == .failed {
                 Notifier.send(title: "Couldn't refresh your apps", body: status)
             }
+        }
+        // Copies of new apps that didn't get installed aren't worth keeping.
+        for job in jobs where job.existing == nil && !localLibrary.contains(where: { $0.ipaFile == job.ipaFile }) {
+            Library.deleteIPA(job.ipaFile)
         }
         UIApplication.shared.isIdleTimerDisabled = false
         endBackgroundTask()
@@ -515,24 +683,23 @@ final class PhoneModel {
             certificates = event.certificates ?? []
         case "installing":
             if let index = event.index, jobs.indices.contains(index) {
-                let app = jobs[index]
-                status = "Refreshing \(app.name)…"
+                let job = jobs[index]
+                status = "\(job.existing == nil ? "Installing" : "Refreshing") \(job.name)…"
                 // Installing Nimbus over itself ends the app before it hears how it went.
-                if isNimbusItself(app) {
+                if let app = job.existing, isNimbusItself(app) {
                     refreshedUntil[app.bundleID] = Date.now.addingTimeInterval(Self.signatureLifetime)
                 }
             }
         case "installed":
-            if let index = event.index, jobs.indices.contains(index) {
-                let expires = event.expires.flatMap { try? Date($0, strategy: .iso8601) }
-                refreshedUntil[jobs[index].bundleID] = expires ?? Date.now.addingTimeInterval(Self.signatureLifetime)
-            }
+            if let index = event.index, jobs.indices.contains(index) { installed(jobs[index], event) }
+        case "limits":
+            if let teamID = event.teamId { self.teamID = teamID }
         case "app_failed":
             jobsFailed += 1
             if let index = event.index, jobs.indices.contains(index) {
-                let app = jobs[index]
-                if isNimbusItself(app) { refreshedUntil[app.bundleID] = nil }
-                let message = "\(app.name): \(event.message ?? "failed")"
+                let job = jobs[index]
+                if let app = job.existing, isNimbusItself(app) { refreshedUntil[app.bundleID] = nil }
+                let message = "\(job.name): \(event.message ?? "failed")"
                 log.append(message)
                 if jobs.count > 1 { status = message }
             }
@@ -545,12 +712,37 @@ final class PhoneModel {
         }
     }
 
+    private func installed(_ job: Job, _ event: HelperEvent) {
+        let expires = event.expires.flatMap { try? Date($0, strategy: .iso8601) }
+            ?? Date.now.addingTimeInterval(Self.signatureLifetime)
+        if let app = job.existing {
+            refreshedUntil[app.bundleID] = expires
+            return
+        }
+        // A new app from an .ipa file on this device.
+        guard let bundleID = event.bundleId, case .connected(let device) = connection else { return }
+        for old in localLibrary where old.bundleID == bundleID && old.ipaFile != job.ipaFile {
+            Library.deleteIPA(old.ipaFile)
+        }
+        localLibrary.removeAll { $0.bundleID == bundleID }
+        localLibrary.append(LibraryApp(
+            bundleID: bundleID,
+            deviceUDID: device.udid,
+            name: event.name ?? job.name,
+            version: event.version,
+            ipaFile: job.ipaFile,
+            installedAt: .now,
+            expiresAt: expires
+        ))
+        refreshedUntil[bundleID] = expires
+    }
+
     private func finish() {
         let succeeded = jobs.count - jobsFailed
         phase = jobsFailed == 0 ? .done : .failed
         progress = 1
         if jobs.count == 1 {
-            status = "\(jobs[0].name) is refreshed."
+            status = "\(jobs[0].name) is \(jobs[0].existing == nil ? "installed" : "refreshed")."
         } else {
             status = jobsFailed == 0
                 ? "\(succeeded) apps are refreshed."

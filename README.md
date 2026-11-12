@@ -37,7 +37,7 @@ You need Xcode (or the Command Line Tools) and [Rust](https://rustup.rs).
 open build/Nimbus.app
 ```
 
-The iPhone app refreshes the apps your Mac installed, without the Mac. To build it, add the Rust
+The iPhone app installs `.ipa` files and refreshes your apps without the Mac. To build it, add the Rust
 targets once with `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`. `build.sh` then puts the
 iPhone app inside the Mac app, which offers to install it. To build it on its own:
 
@@ -72,6 +72,9 @@ Both refresh apps two days before they expire. The iPhone app does it when you o
 gives it time, in the background; it needs LocalDevVPN on and warns you a day ahead if it couldn't. It
 records what it refreshed in `refreshed.json`, which the Mac reads so it doesn't sign in for the same apps.
 
+Apps the iPhone installs itself, from an `.ipa` you pick or open with Nimbus, are kept in a list of their
+own, apart from the one the Mac copies over. The Mac shows them as installed with another tool.
+
 To try that connection from the Mac, over Wi-Fi:
 
 ```sh
@@ -98,6 +101,7 @@ downloading those needs a Patreon sign-in.
   - [x] The Mac app installs the iPhone app and sets it up
   - [x] Sign in and refresh on the iPhone
   - [ ] Refresh in the background on the iPhone (built; iOS decides when it runs, so not yet seen working)
+  - [x] Install `.ipa` files on the iPhone and remove apps there
   - [ ] Install from sources on the iPhone, and enable JIT
 
 ## Credits

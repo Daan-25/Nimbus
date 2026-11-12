@@ -21,6 +21,9 @@ struct ContentView: View {
     @Environment(PhoneModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
     @State private var choosingPairingFile = false
+    @State private var choosingIPA = false
+    /// The app the user is about to remove from the device.
+    @State private var removing: DeviceApp?
     @State private var showLog = false
 
     var body: some View {
@@ -39,6 +42,22 @@ struct ContentView: View {
         .task {
             model.start()
             await model.check()
+        }
+        // An .ipa opened with Nimbus from Files, Safari or the share sheet.
+        .onOpenURL { url in
+            if url.pathExtension.lowercased() == "ipa" { model.add(url) }
+        }
+        .confirmationDialog(
+            "Remove \(removing?.name ?? "this app") from this device?",
+            isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                if let app = removing { model.uninstall(bundleID: app.bundleId, name: app.name) }
+                removing = nil
+            }
+        } message: {
+            Text("The app and its data are deleted.")
         }
         .onChange(of: scenePhase) {
             if scenePhase == .active { Task { await model.check() } }
@@ -142,6 +161,12 @@ struct ContentView: View {
                         .buttonStyle(.bordered)
                         .disabled(model.isBusy || !model.isConnected)
                 }
+                .swipeActions {
+                    // Removing Nimbus from inside Nimbus would cut off the branch it sits on.
+                    if app.bundleID != Bundle.main.bundleIdentifier {
+                        removeButton(DeviceApp(bundleId: app.bundleID, name: app.name, version: app.version))
+                    }
+                }
             }
             ForEach(model.otherApps) { app in
                 HStack(spacing: 12) {
@@ -149,21 +174,38 @@ struct ContentView: View {
                         .opacity(0.4)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(app.name)
-                        Text("Install or refresh it with Nimbus on your Mac once, so Nimbus has a copy here.")
+                        Text("Nimbus has no .ipa file of this app. Add its .ipa to refresh it here.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
+                .swipeActions { removeButton(app) }
             }
+            Button("Add App…", systemImage: "plus") { choosingIPA = true }
+                .disabled(model.isBusy || !model.isConnected)
+                .fileImporter(isPresented: $choosingIPA, allowedContentTypes: [.ipa]) { result in
+                    if case .success(let url) = result { model.add(url) }
+                }
             if model.refreshableApps.count > 1 {
                 Button("Refresh All", systemImage: "arrow.clockwise") { model.refreshAll() }
                     .disabled(model.isBusy || !model.isConnected)
             }
         } header: {
-            Text("Apps")
+            HStack {
+                Text("Apps")
+                Spacer()
+                if let used = model.usedAppSlots {
+                    Text("\(used) of \(PhoneModel.freeAppSlots) slots used")
+                }
+            }
         } footer: {
-            Text("Keep Nimbus open while it refreshes. Refreshing Nimbus itself closes it when it's done.")
+            Text("Add an .ipa file from this device, or open one with Nimbus from Files or Safari. Swipe an app to remove it. Keep Nimbus open while it works; refreshing Nimbus itself closes it when it's done.")
         }
+    }
+
+    private func removeButton(_ app: DeviceApp) -> some View {
+        Button("Remove", systemImage: "trash", role: .destructive) { removing = app }
+            .disabled(model.isBusy || !model.isConnected)
     }
 
     private var automaticSection: some View {
@@ -251,6 +293,10 @@ struct ContentView: View {
             Text("Advanced")
         }
     }
+}
+
+extension UTType {
+    static let ipa = UTType("com.apple.itunes.ipa") ?? UTType(filenameExtension: "ipa") ?? .data
 }
 
 /// An app's icon from the web, with a placeholder until it's loaded or when there is none.

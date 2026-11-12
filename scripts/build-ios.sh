@@ -84,6 +84,16 @@ cat > "$APP/Info.plist" <<PLIST
     <!-- The Mac puts the pairing file in Documents; this also shows the folder in the Files app. -->
     <key>UIFileSharingEnabled</key><true/>
     <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+    <!-- Lets Files, Safari and the share sheet open .ipa files with Nimbus. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>iOS app</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>com.apple.itunes.ipa</string></array>
+        </dict>
+    </array>
     <!-- Refreshing in the background; the identifier is BackgroundRefresh.taskID. -->
     <key>BGTaskSchedulerPermittedIdentifiers</key><array><string>io.github.daan-25.nimbus.refresh</string></array>
     <key>UIBackgroundModes</key><array><string>processing</string></array>

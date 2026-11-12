@@ -28,6 +28,8 @@ struct HelperEvent: Decodable, Sendable {
     var appIdsAvailable: Int?
     /// Expiry dates of the apps Nimbus on the device refreshed itself, by bundle ID.
     var refreshed: [String: String]?
+    /// The lowest iOS version an inspected IPA runs on.
+    var minimumOs: String?
 
     static func decode(_ line: String) -> HelperEvent? {
         let decoder = JSONDecoder()

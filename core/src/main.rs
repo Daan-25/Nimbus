@@ -11,6 +11,7 @@
 //!   nimbus-helper sync-phone UDID BUNDLE_ID    copies apps to Nimbus on the device; reads which from stdin
 //!   nimbus-helper pairing-file UDID PATH       saves a remote pairing file on this Mac
 //!   nimbus-helper crash-log UDID NAME          prints the device's newest crash report of an app
+//!   nimbus-helper inspect PATH                 prints what an .ipa file contains
 //!   nimbus-helper diagnose      tests the connection the iPhone app makes, step by step
 //!
 //! Events go to stdout and replies come from stdin, one JSON object per line.

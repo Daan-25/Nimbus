@@ -137,7 +137,9 @@ pub async fn sync_phone(udid: &str, bundle_id: &str) -> Result<()> {
     let _ = documents.mk_dir(IPA_FOLDER).await;
     let existing = documents.list_dir(IPA_FOLDER).await.unwrap_or_default();
     // Apps that are gone from this Mac's list don't need to take up space on the device.
-    for name in existing.iter().filter(|name| !name.starts_with('.')) {
+    // Files named local-… are apps the device installed itself; they're not this Mac's to remove.
+    let ours = |name: &&String| !name.starts_with('.') && !name.starts_with("local-");
+    for name in existing.iter().filter(ours) {
         if !request.files.iter().any(|file| &file.name == name) {
             let _ = documents.remove(format!("{IPA_FOLDER}/{name}")).await;
         }

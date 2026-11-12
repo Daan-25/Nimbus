@@ -68,6 +68,7 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
         "uninstall" => uninstall(arg(0)?, arg(1)?).await,
         "install" => install().await,
         "diagnose" => device::diagnose().await,
+        "inspect" => inspect(Path::new(arg(0)?)),
         #[cfg(target_os = "macos")]
         "setup-phone" => {
             crate::setup::setup_phone(arg(0)?, arg(1)?, args.get(2).map(String::as_str)).await
@@ -341,6 +342,51 @@ async fn install_one<C: MaxCertsCallback>(
     installed["event"] = json!("installed");
     installed["index"] = json!(index);
     Ok(installed)
+}
+
+/// Reads what an IPA contains without unpacking it, to check a file before signing in for it:
+/// {"event": "ipa", "bundle_id", "name", "version", "minimum_os"}.
+fn inspect(ipa: &Path) -> Result<()> {
+    use std::io::Read;
+
+    let not_an_app = || anyhow!("This isn't a valid app (.ipa) file.");
+    let file = std::fs::File::open(ipa).context("Can't open the file")?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|_| not_an_app())?;
+    // Payload/<App>.app/Info.plist, not the Info.plist files of frameworks and extensions.
+    let entry = archive
+        .file_names()
+        .find(|name| {
+            let parts: Vec<&str> = name.split('/').collect();
+            parts.len() == 3
+                && parts[0] == "Payload"
+                && parts[1].ends_with(".app")
+                && parts[2] == "Info.plist"
+        })
+        .map(str::to_string)
+        .ok_or_else(not_an_app)?;
+    let mut data = Vec::new();
+    archive
+        .by_name(&entry)
+        .map_err(|_| not_an_app())?
+        .take(4 * 1024 * 1024)
+        .read_to_end(&mut data)
+        .map_err(|_| not_an_app())?;
+    let info: plist::Dictionary = plist::from_bytes(&data).map_err(|_| not_an_app())?;
+    let text = |key: &str| {
+        info.get(key)
+            .and_then(|v| v.as_string())
+            .map(str::to_string)
+    };
+    let bundle_id = text("CFBundleIdentifier").ok_or_else(not_an_app)?;
+
+    io::emit(json!({
+        "event": "ipa",
+        "bundle_id": bundle_id,
+        "name": text("CFBundleDisplayName").or_else(|| text("CFBundleName")),
+        "version": text("CFBundleShortVersionString"),
+        "minimum_os": text("MinimumOSVersion"),
+    }));
+    Ok(())
 }
 
 /// Reads the bundle ID, name, version and expiry date from a signed app.
