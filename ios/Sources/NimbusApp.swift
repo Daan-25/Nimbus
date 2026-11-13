@@ -67,7 +67,13 @@ struct ContentView: View {
         }
         // An .ipa opened with Nimbus from Files, Safari or the share sheet.
         .onOpenURL { url in
-            if url.pathExtension.lowercased() == "ipa" { model.add(url) }
+            if url.pathExtension.lowercased() == "ipa" {
+                model.add(url)
+            } else if url.scheme == "nimbus", url.host == "refresh" {
+                // nimbus://refresh, for a shortcut or a link that opens Nimbus and refreshes.
+                tab = .apps
+                model.refreshAll()
+            }
         }
         .confirmationDialog(
             "Remove \(removing?.name ?? "this app") from this device?",
@@ -317,7 +323,7 @@ struct ContentView: View {
             Text("Automatic refresh")
         } footer: {
             Text(model.rememberPassword
-                 ? "Nimbus refreshes your apps two days before they expire: when you open it, and in the background when iOS gives it time. LocalDevVPN has to be on. If it can't, you get a notification a day before they expire."
+                 ? "Nimbus refreshes your apps two days before they expire: when you open it, and in the background when iOS gives it time. LocalDevVPN has to be on. If it can't, you get a notification a day before they expire. For a schedule of your own, add the Refresh All Apps action to an automation in the Shortcuts app."
                  : "Turn on Remember password so Nimbus can refresh on its own.")
         }
     }

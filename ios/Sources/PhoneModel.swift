@@ -796,6 +796,38 @@ final class PhoneModel {
         return phase == .done
     }
 
+    /// Runs when the Refresh All Apps action in Shortcuts does. Returns whether it worked and
+    /// what to tell the user.
+    func refreshFromShortcut(onlyWhenNeeded: Bool) async -> (succeeded: Bool, message: String) {
+        start()
+        guard !isBusy else { return (false, "Nimbus is already busy.") }
+        await check(refreshIfDue: false)
+        defer { scheduleNextRefresh() }
+
+        guard hasCredentials else {
+            return (false, "Open Nimbus, enter your Apple ID and turn on Remember password.")
+        }
+        guard isConnected else {
+            return (false, "Nimbus can't reach this device. Turn on LocalDevVPN first.")
+        }
+        let apps = appsToRefresh
+        guard !apps.isEmpty else {
+            return (true, "Nimbus has no apps to refresh.")
+        }
+        if onlyWhenNeeded {
+            guard isRefreshDue, let nextExpiry else {
+                return (true, "Your apps are fine for now. Nothing to refresh.")
+            }
+            // An automation that fires often shouldn't sign in often.
+            if let last = lastAutoRefresh, Date.now.timeIntervalSince(last) < Self.autoRefreshInterval {
+                return (true, "Nimbus tried a short while ago. The first app expires \(nextExpiry.formatted(.relative(presentation: .named))).")
+            }
+        }
+        lastAutoRefresh = .now
+        await run(jobs(for: apps), automatic: true)
+        return (phase == .done, status)
+    }
+
     // MARK: Running the engine
 
     private func run(_ jobs: [Job], automatic: Bool) async {

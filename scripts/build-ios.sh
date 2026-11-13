@@ -41,16 +41,51 @@ export IPHONEOS_DEPLOYMENT_TARGET="$MIN_IOS"
 echo "› Building Nimbus"
 rm -rf "$APP"
 mkdir -p "$APP"
+SDK_PATH="$(xcrun --sdk "$SDK" --show-sdk-path)"
+INTENTS="$ROOT/build/intents-$SDK"
+rm -rf "$INTENTS"
+mkdir -p "$INTENTS"
+# The Shortcuts app reads which actions an app offers from a description beside the app,
+# not from its code. The compiler notes down what the types of these kinds say about
+# themselves; appintentsmetadataprocessor, below, turns that into the description.
+cat > "$INTENTS/protocols.json" <<JSON
+["AppIntent", "EntityQuery", "AppEntity", "TransientEntity", "AppEnum", "AppShortcutProviding",
+ "AppShortcutsProvider", "AnyResolverProviding", "AppIntentsPackage", "DynamicOptionsProvider",
+ "_IntentValueRepresentable", "_AssistantIntentsProvider", "_GenerativeFunctionExtractable",
+ "IntentValueQuery", "Resolver", "ExtensionPointDefining"]
+JSON
 xcrun --sdk "$SDK" swiftc \
     -target "$SWIFT_TARGET" \
-    -sdk "$(xcrun --sdk "$SDK" --show-sdk-path)" \
-    -swift-version 5 -O -parse-as-library \
+    -sdk "$SDK_PATH" \
+    -swift-version 5 -O -wmo -parse-as-library \
     -module-name Nimbus \
     -import-objc-header "$ROOT/core/include/nimbus_core.h" \
+    -emit-const-values-path "$INTENTS/Nimbus.swiftconstvalues" \
+    -Xfrontend -const-gather-protocols-file -Xfrontend "$INTENTS/protocols.json" \
     "$ROOT"/ios/Sources/*.swift "$ROOT"/shared/*.swift \
     "$ROOT/core/target/$RUST_TARGET/release/libnimbus_core.a" \
     -framework Security -framework CoreFoundation -framework SystemConfiguration -liconv \
     -o "$APP/Nimbus"
+
+# Writes Metadata.appintents into the app, which is where Shortcuts looks.
+ls "$ROOT"/ios/Sources/*.swift "$ROOT"/shared/*.swift > "$INTENTS/sources.txt"
+echo "$INTENTS/Nimbus.swiftconstvalues" > "$INTENTS/const-values.txt"
+xcrun appintentsmetadataprocessor \
+    --output "$APP" \
+    --toolchain-dir "$(dirname "$(dirname "$(dirname "$(xcrun --find swiftc)")")")" \
+    --module-name Nimbus \
+    --sdk-root "$SDK_PATH" \
+    --xcode-version "$(xcodebuild -version | awk '/Build version/ { print $3 }')" \
+    --platform-family iOS \
+    --deployment-target "$MIN_IOS" \
+    --target-triple "$SWIFT_TARGET" \
+    --source-file-list "$INTENTS/sources.txt" \
+    --swift-const-vals-list "$INTENTS/const-values.txt" \
+    --force 2> /dev/null
+[ -f "$APP/Metadata.appintents/extract.actionsdata" ] || {
+    echo "  The Shortcuts action couldn't be described; the app would come without it." >&2
+    exit 1
+}
 
 # The debugging tables name every source file with its full path, user name included.
 strip -S -x "$APP/Nimbus" 2> /dev/null
@@ -73,6 +108,14 @@ cat > "$APP/Info.plist" <<PLIST
     <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
     <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
     <key>UILaunchScreen</key><dict/>
+    <!-- nimbus://refresh opens Nimbus and refreshes every app. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key><string>io.github.daan-25.nimbus</string>
+            <key>CFBundleURLSchemes</key><array><string>nimbus</string></array>
+        </dict>
+    </array>
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>

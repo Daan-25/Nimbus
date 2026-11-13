@@ -92,7 +92,10 @@ certificate and Apple sees one machine; a free Apple ID has too few certificates
 The iPhone app moves the keys out of Documents the first time it opens.
 
 Both refresh apps two days before they expire. The iPhone app does it when you open it and, when iOS
-gives it time, in the background; it needs LocalDevVPN on and warns you a day ahead if it couldn't. It
+gives it time, in the background; it needs LocalDevVPN on and warns you a day ahead if it couldn't. iOS
+gives that time when it likes, so the iPhone app also has a Refresh All Apps action for the Shortcuts app:
+put it in an automation, after a Set VPN action that turns LocalDevVPN on, and it runs when you say. The
+link `nimbus://refresh` opens Nimbus and refreshes. It
 records what it refreshed in `refreshed.json`, which the Mac reads so it doesn't sign in for the same apps.
 
 **JIT.** Open with JIT starts an app with Nimbus attached as its debugger, which is what lets an app run code
@@ -142,6 +145,7 @@ downloading those needs a Patreon sign-in.
   - [x] Mount the developer disk image from Nimbus, so JIT also works after a restart (iOS 26.4 and later)
 - [x] Deactivate an app and activate it again, keeping its data
 - [ ] Confirm that a deactivated app frees its slot for a fourth app
+- [x] A Refresh All Apps action for Shortcuts
 
 ## Credits
 
