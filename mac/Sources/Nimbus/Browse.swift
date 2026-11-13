@@ -5,6 +5,14 @@ struct BrowseView: View {
     @Environment(AppModel.self) private var model
     @State private var search = ""
     @State private var addingSource = false
+    /// The app whose page is open.
+    @State private var showing: Shown?
+
+    private struct Shown: Identifiable {
+        let app: SourceApp
+        let source: Source
+        var id: String { "\(source.url.absoluteString)/\(app.bundleID)" }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,6 +46,21 @@ struct BrowseView: View {
         }
         .searchable(text: $search, prompt: "Search apps")
         .sheet(isPresented: $addingSource) { AddSourceSheet() }
+        .sheet(item: $showing) { shown in
+            VStack(spacing: 0) {
+                AppDetailView(app: shown.app, source: shown.source) {
+                    SourceAppButton(app: shown.app, source: shown.source)
+                }
+                Divider()
+                HStack {
+                    Spacer()
+                    Button("Done") { showing = nil }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding()
+            }
+            .frame(width: 560, height: 640)
+        }
     }
 
     /// Every source with the apps that match the search. While searching, sources without a match are left out.
@@ -69,6 +92,9 @@ struct BrowseView: View {
                     }
                     ForEach(apps) { app in
                         SourceAppRow(app: app, source: source)
+                            // Clicking the row opens the app's page; the button installs straight from the list.
+                            .contentShape(Rectangle())
+                            .onTapGesture { showing = Shown(app: app, source: source) }
                     }
                 } header: {
                     SourceHeader(source: source)
@@ -130,24 +156,9 @@ private struct SourceAppRow: View {
                     .lineLimit(1)
             }
             Spacer()
-            switch model.state(of: app, in: source) {
-            case .available:
-                Button("Get") { model.install(app, from: source) }
-                    .disabled(!canInstall)
-            case .updateAvailable:
-                Button("Update") { model.install(app, from: source) }
-                    .disabled(!canInstall)
-            case .installed:
-                Text("Installed")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
+            SourceAppButton(app: app, source: source)
         }
         .padding(.vertical, 2)
-    }
-
-    private var canInstall: Bool {
-        !model.isBusy && model.selectedDevice != nil && !model.isRateLimited
     }
 
     private var details: String {
@@ -157,6 +168,32 @@ private struct SourceAppRow: View {
         if let size = app.size, size > 0 { parts.append(Int64(size).formatted(.byteCount(style: .file))) }
         if let minimum = app.minOSVersion { parts.append("iOS \(minimum) or later") }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Installs or updates an app from a source, or says it's installed.
+struct SourceAppButton: View {
+    @Environment(AppModel.self) private var model
+    let app: SourceApp
+    let source: Source
+
+    var body: some View {
+        switch model.state(of: app, in: source) {
+        case .available:
+            Button("Get") { model.install(app, from: source) }
+                .disabled(!canInstall)
+        case .updateAvailable:
+            Button("Update") { model.install(app, from: source) }
+                .disabled(!canInstall)
+        case .installed:
+            Text("Installed")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var canInstall: Bool {
+        !model.isBusy && model.selectedDevice != nil && !model.isRateLimited
     }
 }
 

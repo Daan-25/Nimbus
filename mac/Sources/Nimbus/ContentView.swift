@@ -275,6 +275,8 @@ private struct LibraryAppRow: View {
                     .disabled(model.isBusy || model.isRateLimited)
             }
             Menu {
+                Button("Open with JIT") { model.enableJIT(bundleID: app.bundleID, name: app.name) }
+                    .disabled(model.isBusy || model.isInstalled(app) == false || model.isPhoneApp(app))
                 Button("Remove from Device…") {
                     if confirmRemoval(of: app.name) { model.uninstall(bundleID: app.bundleID, name: app.name) }
                 }
@@ -351,6 +353,8 @@ private struct OtherAppRow: View {
             }
             Spacer()
             Menu {
+                Button("Open with JIT") { model.enableJIT(bundleID: app.bundleId, name: app.name) }
+                    .disabled(model.isBusy)
                 Button("Remove from Device…") {
                     if confirmRemoval(of: app.name) { model.uninstall(bundleID: app.bundleId, name: app.name) }
                 }

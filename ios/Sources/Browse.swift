@@ -102,41 +102,29 @@ private struct SourceAppRow: View {
     let source: Source
 
     var body: some View {
-        HStack(spacing: 12) {
-            AppIcon(url: app.iconURL, size: 44)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(app.name)
-                if let line = app.subtitle ?? app.developer {
-                    Text(line)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+        // Tapping the row opens the app's page; the button installs straight from the list.
+        NavigationLink {
+            SourceAppPage(app: app, source: source)
+        } label: {
+            HStack(spacing: 12) {
+                AppIcon(url: app.iconURL, size: 44)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(app.name)
+                    if let line = app.subtitle ?? app.developer {
+                        Text(line)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Text(details)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
-                Text(details)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
-            Spacer()
-            switch model.state(of: app, in: source) {
-            case .available:
-                Button("Get") { model.install(app, from: source) }
-                    .buttonStyle(.bordered)
-                    .disabled(!canInstall)
-            case .updateAvailable:
-                Button("Update") { model.install(app, from: source) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canInstall)
-            case .installed:
-                Text("Installed")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Spacer()
+                SourceAppButton(app: app, source: source)
             }
         }
-    }
-
-    private var canInstall: Bool {
-        !model.isBusy && model.isConnected
     }
 
     private var details: String {
@@ -145,6 +133,66 @@ private struct SourceAppRow: View {
         if let size = app.size, size > 0 { parts.append(Int64(size).formatted(.byteCount(style: .file))) }
         if let minimum = app.minOSVersion { parts.append("iOS \(minimum)+") }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Installs or updates an app from a source, or says it's installed.
+struct SourceAppButton: View {
+    @Environment(PhoneModel.self) private var model
+    let app: SourceApp
+    let source: Source
+
+    var body: some View {
+        switch model.state(of: app, in: source) {
+        case .available:
+            Button("Get") { model.install(app, from: source) }
+                .buttonStyle(.bordered)
+                .disabled(!canInstall)
+        case .updateAvailable:
+            Button("Update") { model.install(app, from: source) }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canInstall)
+        case .installed:
+            Text("Installed")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var canInstall: Bool {
+        !model.isBusy && model.isConnected
+    }
+}
+
+/// The page about one app, with what Nimbus is doing shown while it installs.
+struct SourceAppPage: View {
+    @Environment(PhoneModel.self) private var model
+    let app: SourceApp
+    let source: Source
+
+    var body: some View {
+        AppDetailView(app: app, source: source) {
+            SourceAppButton(app: app, source: source)
+        }
+        .navigationTitle(app.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom) {
+            if model.isBusy || model.phase == .failed {
+                HStack(spacing: 10) {
+                    if model.isBusy {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                    }
+                    Text(model.status)
+                        .font(.footnote)
+                        .lineLimit(3)
+                    Spacer()
+                }
+                .padding()
+                .background(.bar)
+            }
+        }
     }
 }
 

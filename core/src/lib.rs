@@ -12,10 +12,12 @@
 
 mod client_info;
 pub mod config;
+mod ddi;
 mod device;
 mod engine;
 pub mod ffi;
 pub mod io;
+mod jit;
 #[cfg(target_os = "macos")]
 mod setup;
 mod storage;

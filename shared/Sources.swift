@@ -26,6 +26,12 @@ struct SourceApp: Codable, Hashable, Identifiable {
     var size: Int?
     var sha256: String?
     var minOSVersion: String?
+    /// What the app is, in the developer's words.
+    var about: String?
+    var screenshots: [URL]?
+    /// What's new in this release.
+    var releaseNotes: String?
+    var releaseDate: Date?
 
     var id: String { bundleID }
 
@@ -144,6 +150,12 @@ private struct RawApp: Decodable {
     var iconURL: String?
     var versions: [Lossy<RawVersion>]?
     var patreon: Lossy<[String: Lossy<String>]>?
+    var localizedDescription: String?
+    var screenshots: Lossy<RawScreenshots>?
+    // Older sources list screenshots here.
+    var screenshotURLs: [Lossy<String>]?
+    var versionDate: String?
+    var versionDescription: String?
     // Older sources describe the newest version on the app itself.
     var version: String?
     var downloadURL: String?
@@ -171,12 +183,70 @@ private struct RawApp: Decodable {
             downloadURL: downloadURL,
             size: newest != nil ? newest?.size?.value : size?.value,
             sha256: (newest != nil ? newest?.sha256 : sha256)?.trimmed?.lowercased(),
-            minOSVersion: (newest != nil ? newest?.minOSVersion : minOSVersion)?.trimmed
+            minOSVersion: (newest != nil ? newest?.minOSVersion : minOSVersion)?.trimmed,
+            about: localizedDescription?.trimmed,
+            screenshots: screenshots(relativeTo: base),
+            releaseNotes: (newest != nil ? newest?.localizedDescription : versionDescription)?.trimmed,
+            releaseDate: (newest != nil ? newest?.date : versionDate).flatMap(Self.date)
         )
+    }
+
+    private func screenshots(relativeTo base: URL) -> [URL]? {
+        let listed = screenshots?.value?.urls ?? []
+        let texts = listed.isEmpty ? (screenshotURLs ?? []).compactMap(\.value) : listed
+        let urls = texts.compactMap { SourceLoader.secureURL($0, relativeTo: base) }
+        // A page shows a handful; some sources list dozens.
+        return urls.isEmpty ? nil : Array(urls.prefix(10))
+    }
+
+    /// Sources write dates with or without a time and fractional seconds.
+    private static func date(_ text: String) -> Date? {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let formatter = ISO8601DateFormatter()
+        for options: ISO8601DateFormatter.Options in [
+            [.withInternetDateTime], [.withInternetDateTime, .withFractionalSeconds], [.withFullDate],
+        ] {
+            formatter.formatOptions = options
+            if let date = formatter.date(from: text) { return date }
+        }
+        return nil
+    }
+}
+
+/// Screenshots come as a list or grouped by device, each one an address or an object with one.
+private struct RawScreenshots: Decodable {
+    var urls: [String]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let list = try? container.decode([Lossy<RawScreenshot>].self) {
+            urls = list.compactMap(\.value?.url)
+        } else if let groups = try? container.decode([String: Lossy<[Lossy<RawScreenshot>]>].self) {
+            // iPhone screenshots first; they fit every screen Nimbus shows them on.
+            let order = groups.keys.sorted { ($0.lowercased() == "iphone" ? 0 : 1, $0) < ($1.lowercased() == "iphone" ? 0 : 1, $1) }
+            urls = order.flatMap { groups[$0]?.value ?? [] }.compactMap(\.value?.url)
+        } else {
+            urls = []
+        }
+    }
+}
+
+private struct RawScreenshot: Decodable {
+    var url: String
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let text = try? container.decode(String.self) {
+            url = text
+        } else {
+            url = try container.decode([String: Lossy<String>].self)["imageURL"]?.value ?? ""
+        }
     }
 }
 
 private struct RawVersion: Decodable {
+    var date: String?
+    var localizedDescription: String?
     var version: String?
     var buildVersion: String?
     var downloadURL: String?

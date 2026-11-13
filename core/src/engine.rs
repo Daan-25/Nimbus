@@ -69,6 +69,7 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
         "install" => install().await,
         "diagnose" => device::diagnose().await,
         "inspect" => inspect(Path::new(arg(0)?)),
+        "jit" => crate::jit::enable(arg(0)?, arg(1)?).await,
         #[cfg(target_os = "macos")]
         "setup-phone" => {
             crate::setup::setup_phone(arg(0)?, arg(1)?, args.get(2).map(String::as_str)).await

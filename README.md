@@ -17,7 +17,8 @@ It's an alternative to AltStore and SideStore, built to remove the parts that ge
   expire, over a cable or Wi-Fi. It refreshes all apps with one sign-in, and never more than once every six hours.
 - **Shows your limits.** See how many of your 3 app slots are used and how many app IDs you have left this week,
   and remove apps from your device to free a slot.
-- **Works with AltStore sources.** Add a source, then install and update its apps from Nimbus. Downloads are
+- **Works with AltStore sources.** Add a source, read what an app is and see its screenshots, then install and
+  update it from Nimbus. Downloads are
   checked against the source's checksum when it has one.
 - **No separate server.** No AltServer and no mail plug-in. One app does everything.
 - **Clear errors.** Common problems come with a plain explanation of what to do.
@@ -73,6 +74,13 @@ Both refresh apps two days before they expire. The iPhone app does it when you o
 gives it time, in the background; it needs LocalDevVPN on and warns you a day ahead if it couldn't. It
 records what it refreshed in `refreshed.json`, which the Mac reads so it doesn't sign in for the same apps.
 
+**JIT.** Open with JIT starts an app with Nimbus attached as its debugger, which is what lets an app run code
+it generates itself. Before iOS 26 that's all it takes. On newer devices the app also has to ask the debugger
+to prepare its executable memory, with the breakpoints described in
+[StikJIT's integration guide](https://github.com/StikDebug/StikJIT/blob/main/INTEGRATION.md); Nimbus answers
+those, so it works for apps that follow that protocol. `./scripts/build-jit-test.sh` builds a small app to
+check it with. The debugger is part of the developer disk image, which Xcode mounts and a restart removes.
+
 Apps the iPhone installs itself, from an `.ipa` you pick or open with Nimbus, are kept in a list of their
 own, apart from the one the Mac copies over. The Mac shows them as looked after by Nimbus on the device.
 
@@ -104,13 +112,15 @@ downloading those needs a Patreon sign-in.
   - [ ] Refresh in the background on the iPhone (built; iOS decides when it runs, so not yet seen working)
   - [x] Install `.ipa` files on the iPhone and remove apps there
   - [x] Browse and install apps from sources on the iPhone
-  - [ ] Enable JIT
+  - [x] Enable JIT, also on iOS 26 and later for apps that follow the StikJIT protocol
+  - [ ] Mount the developer disk image from Nimbus, so JIT also works after a restart without Xcode
 
 ## Credits
 
 - [isideload](https://github.com/nab138/isideload) by nab138: sign-in, signing and installation
 - [idevice](https://github.com/jkcoxson/idevice) by jkcoxson: communication with iOS devices
 - [AltStore](https://github.com/altstoreio/AltStore) and [SideStore](https://github.com/SideStore/SideStore), which made all of this possible
+- [StikDebug](https://github.com/StikDebug/StikDebug), whose JIT protocol for iOS 26 Nimbus speaks
 
 ## License
 

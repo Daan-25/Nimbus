@@ -499,6 +499,15 @@ final class PhoneModel {
         return .available
     }
 
+    /// The page of an app that came from a source, if that source is still added.
+    func sourceApp(for app: LibraryApp) -> (source: Source, app: SourceApp)? {
+        guard let url = app.sourceURL, let bundleID = app.sourceBundleID,
+              let source = sources.first(where: { $0.url == url }),
+              let found = source.apps.first(where: { $0.bundleID == bundleID })
+        else { return nil }
+        return (source, found)
+    }
+
     /// The newer release of an app that was installed from a source, if there is one.
     func update(for app: LibraryApp) -> (source: Source, app: SourceApp)? {
         guard let url = app.sourceURL, let bundleID = app.sourceBundleID,
@@ -624,6 +633,35 @@ final class PhoneModel {
                 fail(error.localizedDescription)
             }
             await check(refreshIfDue: false)
+        }
+    }
+
+    // MARK: JIT
+
+    /// Starts an app with JIT enabled, by attaching to it as its debugger for a moment.
+    func enableJIT(bundleID: String, name: String) {
+        guard !isBusy, case .connected(let device) = connection else { return }
+        jobs = []
+        phase = .working
+        status = "Starting \(name) with JIT…"
+        progress = nil
+        log = []
+        configure()
+        // The app comes to the front, which puts Nimbus in the background while it still
+        // has to answer the app's requests. This asks iOS for the time to do that.
+        backgroundTask = UIApplication.shared.beginBackgroundTask { [weak self] in
+            Task { @MainActor in self?.endBackgroundTask() }
+        }
+        Task {
+            await Engine.run("jit", args: [device.udid, bundleID]) { event in
+                Task { @MainActor in self.handle(event) }
+            }
+            try? await Task.sleep(for: .milliseconds(200))
+            if isBusy {
+                phase = .idle
+                status = "Cancelled."
+            }
+            endBackgroundTask()
         }
     }
 
@@ -867,6 +905,9 @@ final class PhoneModel {
             }
         case "done":
             finish()
+        case "jit":
+            // The last log line says how it went.
+            phase = .done
         case "error":
             fail(event.message ?? "Unknown error")
         default:

@@ -10,6 +10,7 @@ use crate::io;
 use anyhow::{Result, anyhow};
 use idevice::{
     IdeviceError, IdeviceService, RsdService,
+    core_device_proxy::CoreDeviceProxy,
     installation_proxy::InstallationProxyClient,
     lockdown::LockdownClient,
     provider::UsbmuxdProvider,
@@ -44,8 +45,8 @@ pub enum Link {
 
 /// An encrypted tunnel to a device, with the list of services reachable through it.
 pub struct Tunnel {
-    adapter: AdapterHandle,
-    services: RsdHandshake,
+    pub(crate) adapter: AdapterHandle,
+    pub(crate) services: RsdHandshake,
 }
 
 impl Link {
@@ -203,6 +204,16 @@ pub async fn diagnose() -> Result<()> {
                 Ok(_) => io::log("Apps service: reachable".to_string()),
                 Err(error) => io::log(format!("Apps service: {error} ({error:?})")),
             }
+            if let Link::Tunnel(tunnel) = &link {
+                io::log(format!(
+                    "Debugger (for JIT): {}",
+                    if crate::ddi::is_mounted(tunnel) {
+                        "available"
+                    } else {
+                        "not available; the developer disk image isn't mounted"
+                    }
+                ));
+            }
         }
         Err(error) => io::log(format!("Failed: {error}")),
     }
@@ -272,6 +283,39 @@ pub async fn usb_provider(udid: &str) -> Result<UsbmuxdProvider> {
             anyhow!("No device found. Connect your iPhone or iPad with a cable and unlock it.")
         })?;
     Ok(device.to_provider(UsbmuxdAddr::from_env_var()?, LABEL))
+}
+
+/// Opens a tunnel to a device, which the debugger and the app service need. On the device
+/// itself that's the remote pairing tunnel; on a Mac it runs over the usbmuxd connection.
+pub async fn tunnel_for(udid: Option<&str>) -> Result<Tunnel> {
+    if let Some(device) = config::get().local_device {
+        return open_tunnel(&device, &|_| {}).await;
+    }
+
+    let device = usb_devices()
+        .await?
+        .into_iter()
+        .find(|d| udid.is_none_or(|udid| d.udid == udid))
+        .ok_or_else(|| {
+            anyhow!("No device found. Connect your iPhone or iPad with a cable and unlock it.")
+        })?;
+    let provider = device.to_provider(UsbmuxdAddr::from_env_var()?, LABEL);
+    let proxy = CoreDeviceProxy::connect(&provider)
+        .await
+        .map_err(|e| anyhow!("Can't open a tunnel to your device: {e}"))?;
+    let rsd_port = proxy.tunnel_info().server_rsd_port;
+    let mut adapter = proxy
+        .create_software_tunnel()
+        .map_err(|e| anyhow!("Can't open a tunnel to your device: {e}"))?
+        .to_async_handle();
+    let stream = adapter
+        .connect(rsd_port)
+        .await
+        .map_err(|e| anyhow!("Couldn't reach the device through the tunnel: {e}"))?;
+    let services = RsdHandshake::new(stream)
+        .await
+        .map_err(|e| anyhow!("The device didn't list its services: {e} ({e:?})"))?;
+    Ok(Tunnel { adapter, services })
 }
 
 pub async fn link_for(udid: Option<&str>) -> Result<Link> {

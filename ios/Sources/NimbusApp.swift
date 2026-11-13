@@ -194,12 +194,17 @@ struct ContentView: View {
             }
             ForEach(model.refreshableApps) { app in
                 HStack(spacing: 12) {
-                    AppIcon(url: app.iconURL)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(app.name)
-                        expiry(of: app).font(.caption)
+                    // An app from a source opens its page.
+                    if let page = model.sourceApp(for: app) {
+                        NavigationLink {
+                            SourceAppPage(app: page.app, source: page.source)
+                        } label: {
+                            appLabel(app)
+                        }
+                    } else {
+                        appLabel(app)
+                        Spacer()
                     }
-                    Spacer()
                     // Updating signs the app again, so it also refreshes it.
                     if let update = model.update(for: app) {
                         Button("Update") { model.install(update.app, from: update.source) }
@@ -217,6 +222,11 @@ struct ContentView: View {
                         removeButton(DeviceApp(bundleId: app.bundleID, name: app.name, version: app.version))
                     }
                 }
+                .swipeActions(edge: .leading) {
+                    if app.bundleID != Bundle.main.bundleIdentifier {
+                        jitButton(bundleID: app.bundleID, name: app.name)
+                    }
+                }
             }
             ForEach(model.otherApps) { app in
                 HStack(spacing: 12) {
@@ -230,6 +240,7 @@ struct ContentView: View {
                     }
                 }
                 .swipeActions { removeButton(app) }
+                .swipeActions(edge: .leading) { jitButton(bundleID: app.bundleId, name: app.name) }
             }
             Button("Add App…", systemImage: "plus") { choosingIPA = true }
                 .disabled(model.isBusy || !model.isConnected)
@@ -249,8 +260,25 @@ struct ContentView: View {
                 }
             }
         } footer: {
-            Text("Find apps under Browse, add an .ipa file from this device, or open one with Nimbus from Files or Safari. Swipe an app to remove it. Keep Nimbus open while it works; refreshing Nimbus itself closes it when it's done.")
+            Text("Find apps under Browse, add an .ipa file from this device, or open one with Nimbus from Files or Safari. Swipe an app left to remove it, or right to open it with JIT. Keep Nimbus open while it works; refreshing Nimbus itself closes it when it's done.")
         }
+    }
+
+    private func appLabel(_ app: LibraryApp) -> some View {
+        HStack(spacing: 12) {
+            AppIcon(url: app.iconURL)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(app.name)
+                expiry(of: app).font(.caption)
+            }
+        }
+    }
+
+    /// Starts the app with JIT, for emulators and other apps that generate code.
+    private func jitButton(bundleID: String, name: String) -> some View {
+        Button("Open with JIT", systemImage: "bolt.fill") { model.enableJIT(bundleID: bundleID, name: name) }
+            .tint(.yellow)
+            .disabled(model.isBusy || !model.isConnected)
     }
 
     private func removeButton(_ app: DeviceApp) -> some View {

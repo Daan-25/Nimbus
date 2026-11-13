@@ -580,6 +580,43 @@ final class AppModel {
         }
     }
 
+    // MARK: JIT
+
+    /// Starts an app on the device with JIT enabled, by attaching to it as its debugger for a moment.
+    func enableJIT(bundleID: String, name: String) {
+        guard !isBusy, let udid = selectedUDID else { return }
+        phase = .working
+        status = "Starting \(name) with JIT…"
+        progress = nil
+        log = []
+        do {
+            let helper = try Helper(arguments: ["jit", udid, bundleID])
+            self.helper = helper
+            try helper.start(
+                onEvent: { [weak self] event in
+                    switch event.event {
+                    case "log":
+                        if let message = event.message {
+                            self?.log.append(message)
+                            self?.status = message
+                        }
+                    case "jit":
+                        // The last log line says how it went.
+                        self?.phase = .done
+                    case "error":
+                        self?.fail(event.message ?? "Unknown error")
+                    default:
+                        break
+                    }
+                },
+                onLog: { [weak self] in self?.log.append($0) },
+                onExit: { [weak self, weak helper] code in self?.helperExited(code, helper) }
+            )
+        } catch {
+            fail(error.localizedDescription)
+        }
+    }
+
     // MARK: Nimbus for iPhone
 
     /// Sends the pairing file again, for when Nimbus on the device lost it or it stopped working.
