@@ -3,8 +3,8 @@
 Nimbus installs apps on your iPhone or iPad with a free Apple ID: no jailbreak, no paid developer account.
 It's an alternative to AltStore and SideStore, built to remove the parts that get in the way.
 
-> **Status:** in development. The Mac app and the iPhone app both install and refresh apps, but there's no
-> release to download yet: you build Nimbus yourself. See the [roadmap](#roadmap).
+> **Status:** early, and it works. Made by one person and tried on one iPhone, so expect rough edges. See the
+> [roadmap](#roadmap).
 
 ## Why Nimbus
 
@@ -24,6 +24,19 @@ It's an alternative to AltStore and SideStore, built to remove the parts that ge
 - **Clear errors.** Common problems come with a plain explanation of what to do.
 - **Your password stays on your Mac.** It goes only to Apple, and the Keychain stores it only if you ask.
 
+## Install
+
+Download `Nimbus-<version>.dmg` from the [latest release](https://github.com/Daan-25/Nimbus/releases/latest),
+open it and drag Nimbus to Applications.
+
+Nimbus isn't notarized, because that takes a paid Apple developer account. So the first time, macOS refuses
+to open it. Open it once anyway, then go to System Settings → Privacy & Security, scroll down and choose
+Open Anyway. Or tell macOS up front that you trust it:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Nimbus.app
+```
+
 ## Requirements
 
 - macOS 14 or later
@@ -38,6 +51,9 @@ You need Xcode (or the Command Line Tools) and [Rust](https://rustup.rs).
 ./scripts/build.sh
 open build/Nimbus.app
 ```
+
+`./scripts/package.sh` also packs the app into `build/Nimbus-<version>.dmg`. The icons are drawn in code, in
+`shared/NimbusIcon.swift`.
 
 The iPhone app installs `.ipa` files and refreshes your apps without the Mac. To build it, add the Rust
 targets once with `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`. `build.sh` then puts the

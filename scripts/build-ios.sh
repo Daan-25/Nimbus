@@ -32,6 +32,8 @@ if ! rustup target list --installed | grep -qx "$RUST_TARGET"; then
     echo "  Missing Rust target. Run: rustup target add $RUST_TARGET" >&2
     exit 1
 fi
+# Keeps the paths of the machine that builds Nimbus, with its user name, out of the app.
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=~ --remap-path-prefix=$ROOT=nimbus"
 # Without this, the C code in the engine is built for the newest iOS only.
 export IPHONEOS_DEPLOYMENT_TARGET="$MIN_IOS"
 (cd "$ROOT/core" && cargo rustc --release --lib --crate-type staticlib --target "$RUST_TARGET")
@@ -101,6 +103,28 @@ cat > "$APP/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# The app icon: an asset catalog with one large picture, which actool cuts to size.
+[ -f "$ROOT/build/icons/ios-1024.png" ] || "$ROOT/scripts/make-icons.sh"
+ASSETS="$ROOT/build/icons/Assets.xcassets"
+rm -rf "$ASSETS"
+mkdir -p "$ASSETS/AppIcon.appiconset"
+cp "$ROOT/build/icons/ios-1024.png" "$ASSETS/AppIcon.appiconset/icon.png"
+cat > "$ASSETS/Contents.json" <<JSON
+{ "info": { "author": "xcode", "version": 1 } }
+JSON
+cat > "$ASSETS/AppIcon.appiconset/Contents.json" <<JSON
+{
+  "images": [{ "filename": "icon.png", "idiom": "universal", "platform": "ios", "size": "1024x1024" }],
+  "info": { "author": "xcode", "version": 1 }
+}
+JSON
+xcrun actool "$ASSETS" --compile "$APP" --platform "$SDK" \
+    --minimum-deployment-target "$MIN_IOS" --target-device iphone --target-device ipad \
+    --app-icon AppIcon --output-partial-info-plist "$ROOT/build/icons/icon-info.plist" \
+    --output-format human-readable-text > /dev/null
+# actool says which icon keys the Info.plist needs.
+/usr/libexec/PlistBuddy -c "Merge $ROOT/build/icons/icon-info.plist" "$APP/Info.plist"
 
 if [ "$SDK" = iphonesimulator ]; then
     codesign --force --sign - "$APP"

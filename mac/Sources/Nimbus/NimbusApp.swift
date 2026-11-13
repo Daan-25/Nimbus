@@ -28,12 +28,32 @@ private struct MenuBarLabel: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Image(systemName: model.isBusy ? "arrow.triangle.2.circlepath.icloud" : "cloud")
+        Image(nsImage: Self.icon(busy: model.isBusy))
             .task { model.start() }
             .onChange(of: model.attentionRequests) {
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
             }
+    }
+}
+
+extension MenuBarLabel {
+    /// Nimbus's planet as a menu bar icon, which macOS colors to match the bar. While Nimbus
+    /// is working, a moon sits next to it.
+    static func icon(busy: Bool) -> NSImage {
+        let image = NSImage(size: NSSize(width: 20, height: 18), flipped: false) { rect in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            let black = CGColor(gray: 0, alpha: 1)
+            // A little larger than the box: the ring is wide and flat, the bar is low.
+            NimbusIcon.drawPlanet(in: context, rect: rect.insetBy(dx: -2, dy: -3), planet: black, ring: black, knockout: true)
+            if busy {
+                context.setFillColor(black)
+                context.fillEllipse(in: CGRect(x: rect.maxX - 5, y: rect.maxY - 5, width: 4.5, height: 4.5))
+            }
+            return true
+        }
+        image.isTemplate = true
+        return image
     }
 }
 

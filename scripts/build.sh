@@ -11,15 +11,21 @@ if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode.app ]; then
 fi
 
 echo "› Building nimbus-helper"
+# Keeps the paths of the machine that builds Nimbus, with its user name, out of the app.
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=~ --remap-path-prefix=$ROOT=nimbus"
 cargo build --release --manifest-path "$ROOT/core/Cargo.toml"
 
 echo "› Building Nimbus"
 swift build -c release --package-path "$ROOT/mac"
 SWIFT_BIN="$(swift build -c release --package-path "$ROOT/mac" --show-bin-path)"
 
+echo "› Drawing the icons"
+"$ROOT/scripts/make-icons.sh"
+
 echo "› Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$ROOT/build/icons/Nimbus.icns" "$APP/Contents/Resources/Nimbus.icns"
 cp "$SWIFT_BIN/Nimbus" "$APP/Contents/MacOS/Nimbus"
 cp "$ROOT/core/target/release/nimbus-helper" "$APP/Contents/MacOS/nimbus-helper"
 
@@ -29,6 +35,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key><string>Nimbus</string>
+    <key>CFBundleIconFile</key><string>Nimbus</string>
     <key>CFBundleIdentifier</key><string>io.github.daan-25.nimbus</string>
     <key>CFBundleName</key><string>Nimbus</string>
     <key>CFBundleDisplayName</key><string>Nimbus</string>
