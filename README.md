@@ -53,6 +53,10 @@ You need Xcode (or the Command Line Tools) and [Rust](https://rustup.rs).
 open build/Nimbus.app
 ```
 
+The Keychain asks for your password again after every build, because each build has a new signature. Run
+`./scripts/make-signing-identity.sh` once to sign builds with a certificate of their own; after that, choosing
+Always Allow sticks.
+
 `./scripts/package.sh` also packs the app into `build/Nimbus-<version>.dmg`. The icons are drawn in code, in
 `shared/NimbusIcon.swift`.
 

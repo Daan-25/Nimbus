@@ -59,8 +59,17 @@ else
     echo "› Skipping Nimbus for iPhone (run: rustup target add aarch64-apple-ios)"
 fi
 
-echo "› Signing (ad hoc)"
-codesign --force --sign - "$APP/Contents/MacOS/nimbus-helper"
-codesign --force --sign - "$APP"
+# With a certificate, every build has the same signature in the Keychain's eyes, so it stops
+# asking for your password after each build. Without one, the build is signed ad hoc and
+# works the same otherwise. See scripts/make-signing-identity.sh.
+IDENTITY="${NIMBUS_SIGN_IDENTITY:-Nimbus Code Signing}"
+if security find-identity -v -p codesigning 2> /dev/null | grep -q "\"$IDENTITY\""; then
+    echo "› Signing as \"$IDENTITY\""
+else
+    echo "› Signing (ad hoc; run scripts/make-signing-identity.sh to stop the Keychain asking after every build)"
+    IDENTITY="-"
+fi
+codesign --force --sign "$IDENTITY" --identifier io.github.daan-25.nimbus.helper "$APP/Contents/MacOS/nimbus-helper"
+codesign --force --sign "$IDENTITY" "$APP"
 
 echo "✓ $APP"
