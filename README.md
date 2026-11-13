@@ -79,7 +79,12 @@ it generates itself. Before iOS 26 that's all it takes. On newer devices the app
 to prepare its executable memory, with the breakpoints described in
 [StikJIT's integration guide](https://github.com/StikDebug/StikJIT/blob/main/INTEGRATION.md); Nimbus answers
 those, so it works for apps that follow that protocol. `./scripts/build-jit-test.sh` builds a small app to
-check it with. The debugger is part of the developer disk image, which Xcode mounts and a restart removes.
+check it with.
+
+The debugger is part of the developer disk image, which a restart removes. Nimbus mounts it when it's
+missing, on iOS 26.4 and later: Apple signs the image for the device, and the device then accepts it. The
+image comes with Xcode; the Mac app copies it to the iPhone app along with your apps, so the iPhone can
+mount it without the Mac. `nimbus-helper ddi UDID` shows whether it's mounted.
 
 Apps the iPhone installs itself, from an `.ipa` you pick or open with Nimbus, are kept in a list of their
 own, apart from the one the Mac copies over. The Mac shows them as looked after by Nimbus on the device.
@@ -113,7 +118,7 @@ downloading those needs a Patreon sign-in.
   - [x] Install `.ipa` files on the iPhone and remove apps there
   - [x] Browse and install apps from sources on the iPhone
   - [x] Enable JIT, also on iOS 26 and later for apps that follow the StikJIT protocol
-  - [ ] Mount the developer disk image from Nimbus, so JIT also works after a restart without Xcode
+  - [x] Mount the developer disk image from Nimbus, so JIT also works after a restart (iOS 26.4 and later)
 
 ## Credits
 

@@ -21,6 +21,8 @@ const IDENTITY_FILE: &str = "/Documents/identity.json";
 const SIGNING_FILE: &str = "/Documents/signing.json";
 const LIBRARY_FILE: &str = "/Documents/library.json";
 const IPA_FOLDER: &str = "/Documents/IPAs";
+/// The developer disk image, so Nimbus on the device can mount it for JIT after a restart.
+const DDI_FOLDER: &str = "/Documents/DDI";
 /// Written by Nimbus on the device: until when the apps it refreshed itself keep working.
 const REFRESHED_FILE: &str = "/Documents/refreshed.json";
 /// Written by Nimbus on the device: the apps it installed itself from .ipa files.
@@ -147,25 +149,49 @@ pub async fn sync_phone(udid: &str, bundle_id: &str) -> Result<()> {
         }
     }
 
-    let total: u64 = request
+    // What to copy: the apps, and the developer disk image when this Mac has one.
+    let mut uploads: Vec<(std::path::PathBuf, String)> = request
         .files
         .iter()
-        .filter_map(|file| std::fs::metadata(&file.path).ok())
+        .map(|file| (file.path.clone(), format!("{IPA_FOLDER}/{}", file.name)))
+        .collect();
+    if let Some(image) = crate::ddi::image_folder() {
+        let _ = documents.mk_dir(DDI_FOLDER).await;
+        let mut folders = vec![image.clone()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder)?.flatten() {
+                let path = entry.path();
+                let Ok(relative) = path.strip_prefix(&image) else {
+                    continue;
+                };
+                let remote = format!("{DDI_FOLDER}/{}", relative.to_string_lossy());
+                if path.is_dir() {
+                    let _ = documents.mk_dir(remote).await;
+                    folders.push(path);
+                } else {
+                    uploads.push((path, remote));
+                }
+            }
+        }
+    }
+
+    let total: u64 = uploads
+        .iter()
+        .filter_map(|(path, _)| std::fs::metadata(path).ok())
         .map(|metadata| metadata.len())
         .sum();
     let mut done = 0u64;
-    for file in &request.files {
-        let Ok(metadata) = std::fs::metadata(&file.path) else {
+    for (path, remote) in uploads {
+        let Ok(metadata) = std::fs::metadata(&path) else {
             continue;
         };
         let size = metadata.len();
-        let remote = format!("{IPA_FOLDER}/{}", file.name);
         let already_there = documents
             .get_file_info(remote.clone())
             .await
             .is_ok_and(|info| info.size as u64 == size);
         if !already_there {
-            let mut local = std::fs::File::open(&file.path)?;
+            let mut local = std::fs::File::open(&path)?;
             let mut target = documents
                 .open(remote, AfcFopenMode::WrOnly)
                 .await

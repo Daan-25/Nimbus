@@ -70,6 +70,7 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
         "diagnose" => device::diagnose().await,
         "inspect" => inspect(Path::new(arg(0)?)),
         "jit" => crate::jit::enable(arg(0)?, arg(1)?).await,
+        "ddi" => ddi(arg(0)?, args.get(1).map(String::as_str)).await,
         #[cfg(target_os = "macos")]
         "setup-phone" => {
             crate::setup::setup_phone(arg(0)?, arg(1)?, args.get(2).map(String::as_str)).await
@@ -343,6 +344,25 @@ async fn install_one<C: MaxCertsCallback>(
     installed["event"] = json!("installed");
     installed["index"] = json!(index);
     Ok(installed)
+}
+
+/// Shows whether the developer disk image is mounted, or mounts or unmounts it.
+async fn ddi(udid: &str, action: Option<&str>) -> Result<()> {
+    let mut tunnel = device::tunnel_for(Some(udid)).await?;
+    match action {
+        Some("mount") => crate::ddi::mount(&mut tunnel).await?,
+        Some("unmount") => crate::ddi::unmount(&mut tunnel).await?,
+        _ => {}
+    }
+    if action.is_some() {
+        tunnel = device::tunnel_for(Some(udid)).await?;
+    }
+    io::emit(json!({
+        "event": "ddi",
+        "mounted": crate::ddi::is_mounted(&tunnel),
+        "image": crate::ddi::image_folder().is_some(),
+    }));
+    Ok(())
 }
 
 /// Reads what an IPA contains without unpacking it, to check a file before signing in for it:

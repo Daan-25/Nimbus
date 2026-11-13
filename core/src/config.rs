@@ -15,6 +15,8 @@ pub struct Config {
     pub user_agent: Option<String>,
     /// Where to keep the signing key and anisette state, instead of the Keychain.
     pub storage_dir: Option<PathBuf>,
+    /// The folder with the developer disk image, where that isn't Xcode's.
+    pub ddi_dir: Option<PathBuf>,
 }
 
 /// A device reached by address with a remote pairing file, without usbmuxd.

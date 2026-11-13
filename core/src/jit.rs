@@ -38,22 +38,39 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 pub async fn enable(udid: &str, bundle_id: &str) -> Result<()> {
     io::log("Connecting to the device…");
     let mut tunnel = device::tunnel_for(Some(udid)).await?;
-    crate::ddi::ensure_mounted(&mut tunnel).await?;
+    // The debugger comes with the developer disk image, which a restart removes.
+    if !crate::ddi::is_mounted(&tunnel) {
+        crate::ddi::mount(&mut tunnel).await?;
+        // The debugger shows up in a fresh list of services.
+        tunnel = device::tunnel_for(Some(udid)).await?;
+        if !crate::ddi::is_mounted(&tunnel) {
+            anyhow::bail!(
+                "The developer disk image is mounted, but the device still offers no debugger."
+            );
+        }
+    }
 
     io::log("Starting the app…");
     let mut apps = AppServiceClient::connect_rsd(&mut tunnel.adapter, &mut tunnel.services)
         .await
         .map_err(|e| anyhow!("Can't reach the device's app service: {e}"))?;
     // A fresh start: apps set up their JIT memory while they launch.
-    let launched = apps
-        .launch_application(bundle_id, &[], true, false, None, None, None)
-        .await
-        .map_err(|e| anyhow!("Couldn't start the app: {e}"))?;
+    let launched = tokio::time::timeout(
+        REPLY_TIMEOUT,
+        apps.launch_application(bundle_id, &[], true, false, None, None, None),
+    )
+    .await
+    .map_err(|_| anyhow!("The app didn't start. Unlock the device and try again."))?
+    .map_err(|e| anyhow!("Couldn't start the app: {e}"))?;
 
     io::log("Attaching the debugger…");
-    let client = DebugProxyClient::connect_rsd(&mut tunnel.adapter, &mut tunnel.services)
-        .await
-        .map_err(|e| anyhow!("Can't reach the device's debugger: {e}"))?;
+    let client = tokio::time::timeout(
+        REPLY_TIMEOUT,
+        DebugProxyClient::connect_rsd(&mut tunnel.adapter, &mut tunnel.services),
+    )
+    .await
+    .map_err(|_| anyhow!("The device's debugger didn't answer."))?
+    .map_err(|e| anyhow!("Can't reach the device's debugger: {e}"))?;
     let mut debugger = Debugger { client };
     let regions = debugger.run(launched.pid).await?;
 

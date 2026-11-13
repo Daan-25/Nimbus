@@ -397,7 +397,12 @@ final class PhoneModel {
             "pairing_file": Library.pairingFile.path,
         ]
         if parts.count == 2, let port = Int(parts[1]) { device["port"] = port }
-        var config: [String: Any] = ["local_device": device, "storage_dir": Library.storage.path]
+        var config: [String: Any] = [
+            "local_device": device,
+            "storage_dir": Library.storage.path,
+            // The developer disk image the Mac copied over, to mount it for JIT.
+            "ddi_dir": Library.documents.appendingPathComponent("DDI", isDirectory: true).path,
+        ]
         // The Mac's identity, so Nimbus signs in to Apple as that Mac.
         if let data = try? Data(contentsOf: Library.identityFile),
            let identity = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
