@@ -270,13 +270,21 @@ private struct LibraryAppRow: View {
                 Button("Update") { model.install(update.app, from: update.source) }
                     .disabled(model.isBusy || model.isRateLimited)
                     .help(update.app.version.map { "Version \($0) is available." } ?? "A newer version is available.")
+            } else if !model.isActive(app.bundleID) {
+                Button("Activate") { model.activate(bundleID: app.bundleID, name: app.name) }
+                    .disabled(model.isBusy)
             } else {
                 Button("Refresh") { model.refresh([app]) }
                     .disabled(model.isBusy || model.isRateLimited)
             }
             Menu {
                 Button("Open with JIT") { model.enableJIT(bundleID: app.bundleID, name: app.name) }
-                    .disabled(model.isBusy || model.isInstalled(app) == false || model.isPhoneApp(app))
+                    .disabled(model.isBusy || model.isInstalled(app) == false || model.isPhoneApp(app) || !model.isActive(app.bundleID))
+                // Deactivating Nimbus on the device would stop it from activating anything again.
+                if model.isActive(app.bundleID) && !model.isPhoneApp(app) {
+                    Button("Deactivate") { model.deactivate(bundleID: app.bundleID, name: app.name) }
+                        .disabled(model.isBusy || model.isInstalled(app) == false)
+                }
                 Button("Remove from Device…") {
                     if confirmRemoval(of: app.name) { model.uninstall(bundleID: app.bundleID, name: app.name) }
                 }
@@ -302,6 +310,8 @@ private struct LibraryAppRow: View {
     @ViewBuilder private var expiry: some View {
         if model.isInstalled(app) == false {
             Text("Not on this device anymore").foregroundStyle(.secondary)
+        } else if !model.isActive(app.bundleID) {
+            Text("Deactivated. Its data is kept, and it doesn't take up a slot.").foregroundStyle(.secondary)
         } else {
             let expires = model.expiry(of: app)
             if expires < .now {
@@ -324,7 +334,9 @@ private struct OtherAppRow: View {
     }
 
     @ViewBuilder private var detail: some View {
-        if let expires = managedUntil {
+        if app.active == false {
+            Text("Deactivated. Its data is kept, and it doesn't take up a slot.").foregroundStyle(.secondary)
+        } else if let expires = managedUntil {
             // The device didn't say when it expires.
             if expires == .distantPast {
                 Text("Installed by Nimbus on the device, which refreshes it.").foregroundStyle(.secondary)
@@ -353,8 +365,15 @@ private struct OtherAppRow: View {
             }
             Spacer()
             Menu {
+                if app.active == false {
+                    Button("Activate") { model.activate(bundleID: app.bundleId, name: app.name) }
+                        .disabled(model.isBusy)
+                } else {
+                    Button("Deactivate") { model.deactivate(bundleID: app.bundleId, name: app.name) }
+                        .disabled(model.isBusy)
+                }
                 Button("Open with JIT") { model.enableJIT(bundleID: app.bundleId, name: app.name) }
-                    .disabled(model.isBusy)
+                    .disabled(model.isBusy || app.active == false)
                 Button("Remove from Device…") {
                     if confirmRemoval(of: app.name) { model.uninstall(bundleID: app.bundleId, name: app.name) }
                 }

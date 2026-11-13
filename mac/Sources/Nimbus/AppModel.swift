@@ -191,7 +191,13 @@ final class AppModel {
     /// which are the ones limited to 3 apps; Apple reports an app ID limit only for those.
     var usedAppSlots: Int? {
         guard let teamID, appIDsMax != nil, let deviceApps else { return nil }
-        return deviceApps.filter { $0.bundleId.contains(teamID) }.count
+        // Deactivated apps don't count.
+        return deviceApps.filter { $0.bundleId.contains(teamID) && $0.active != false }.count
+    }
+
+    /// False for an app that's deactivated: on the device with its data, but not usable.
+    func isActive(_ bundleID: String) -> Bool {
+        deviceApps?.first { $0.bundleId == bundleID }?.active != false
     }
 
     func isPhoneApp(_ app: LibraryApp) -> Bool {
@@ -432,7 +438,8 @@ final class AppModel {
     }
 
     func refreshAll() {
-        refresh(libraryAppsOnDevice.filter { isInstalled($0) != false })
+        // Refreshing a deactivated app would activate it and take up a slot.
+        refresh(libraryAppsOnDevice.filter { isInstalled($0) != false && isActive($0.bundleID) })
     }
 
     func forget(_ app: LibraryApp) {
@@ -459,6 +466,52 @@ final class AppModel {
                 fail(error.localizedDescription)
             }
             await refreshDeviceApps()
+        }
+    }
+
+    /// Takes an app's profile off the device. The app and its data stay, but it won't open and
+    /// no longer counts towards the three apps a free Apple ID allows.
+    func deactivate(bundleID: String, name: String) {
+        guard !isBusy, let udid = selectedUDID else { return }
+        phase = .working
+        status = "Deactivating \(name)…"
+        progress = nil
+        Task {
+            do {
+                _ = try await Helper.runOnce(["deactivate", udid, bundleID, Library.profilesFolder.path])
+                phase = .done
+                status = "\(name) is deactivated. Its data is kept, and a slot is free."
+            } catch {
+                fail(error.localizedDescription)
+            }
+            await refreshDeviceApps()
+        }
+    }
+
+    /// Puts an app's profile back. When Nimbus has no usable profile left, refreshing the app
+    /// gives it a new one, which needs the app's .ipa.
+    func activate(bundleID: String, name: String) {
+        guard !isBusy, let udid = selectedUDID else { return }
+        if let used = usedAppSlots, used >= Self.freeAppSlots {
+            return fail("All \(Self.freeAppSlots) app slots on \(selectedDevice?.name ?? "your device") are in use. Deactivate or remove an app first.")
+        }
+        phase = .working
+        status = "Activating \(name)…"
+        progress = nil
+        Task {
+            do {
+                _ = try await Helper.runOnce(["activate", udid, bundleID, Library.profilesFolder.path])
+                phase = .done
+                status = "\(name) is activated."
+                await refreshDeviceApps()
+            } catch {
+                phase = .idle
+                if let app = library.first(where: { $0.bundleID == bundleID && $0.deviceUDID == udid }) {
+                    refresh([app])
+                } else {
+                    fail(error.localizedDescription)
+                }
+            }
         }
     }
 
@@ -528,7 +581,7 @@ final class AppModel {
         if let last = lastAutoRefresh, Date.now.timeIntervalSince(last) < Self.autoRefreshInterval {
             return
         }
-        let apps = libraryAppsOnDevice.filter { isInstalled($0) == true }
+        let apps = libraryAppsOnDevice.filter { isInstalled($0) == true && isActive($0.bundleID) }
         let deadline = Date.now.addingTimeInterval(Self.refreshWindow)
         // Refresh every app at once, so it takes a single sign-in.
         guard apps.contains(where: { expiry(of: $0) < deadline }) else { return }

@@ -5,6 +5,8 @@
 //!   nimbus-helper devices       prints the connected devices
 //!   nimbus-helper apps UDID     prints the sideloaded apps on a device
 //!   nimbus-helper uninstall UDID BUNDLE_ID
+//!   nimbus-helper deactivate UDID BUNDLE_ID FOLDER   takes an app's profile off the device, keeping app and data
+//!   nimbus-helper activate UDID BUNDLE_ID FOLDER     puts that profile back
 //!   nimbus-helper install       reads an install request from stdin, then answers prompts
 //!   nimbus-helper setup-phone UDID BUNDLE_ID [APPLE_ID]   gives Nimbus on the device its pairing file
 //!   nimbus-helper phone-status UDID BUNDLE_ID  prints what Nimbus on the device refreshed itself

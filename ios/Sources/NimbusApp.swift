@@ -205,8 +205,12 @@ struct ContentView: View {
                         appLabel(app)
                         Spacer()
                     }
-                    // Updating signs the app again, so it also refreshes it.
-                    if let update = model.update(for: app) {
+                    if !model.isActive(app.bundleID) {
+                        Button("Activate") { model.activate(bundleID: app.bundleID, name: app.name) }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.isBusy || !model.isConnected)
+                    } else if let update = model.update(for: app) {
+                        // Updating signs the app again, so it also refreshes it.
                         Button("Update") { model.install(update.app, from: update.source) }
                             .buttonStyle(.borderedProminent)
                             .disabled(model.isBusy || !model.isConnected)
@@ -220,6 +224,7 @@ struct ContentView: View {
                     // Removing Nimbus from inside Nimbus would cut off the branch it sits on.
                     if app.bundleID != Bundle.main.bundleIdentifier {
                         removeButton(DeviceApp(bundleId: app.bundleID, name: app.name, version: app.version))
+                        activationButton(bundleID: app.bundleID, name: app.name)
                     }
                 }
                 .swipeActions(edge: .leading) {
@@ -234,12 +239,17 @@ struct ContentView: View {
                         .opacity(0.4)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(app.name)
-                        Text("Nimbus has no .ipa file of this app. Add its .ipa to refresh it here.")
+                        Text(app.active == false
+                             ? "Deactivated. Its data is kept, and it doesn't take up a slot."
+                             : "Nimbus has no .ipa file of this app. Add its .ipa to refresh it here.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
-                .swipeActions { removeButton(app) }
+                .swipeActions {
+                    removeButton(app)
+                    activationButton(bundleID: app.bundleId, name: app.name)
+                }
                 .swipeActions(edge: .leading) { jitButton(bundleID: app.bundleId, name: app.name) }
             }
             Button("Add App…", systemImage: "plus") { choosingIPA = true }
@@ -260,7 +270,7 @@ struct ContentView: View {
                 }
             }
         } footer: {
-            Text("Find apps under Browse, add an .ipa file from this device, or open one with Nimbus from Files or Safari. Swipe an app left to remove it, or right to open it with JIT. Keep Nimbus open while it works; refreshing Nimbus itself closes it when it's done.")
+            Text("Find apps under Browse, add an .ipa file from this device, or open one with Nimbus from Files or Safari. Swipe an app left to remove or deactivate it, or right to open it with JIT. A deactivated app keeps its data and frees its slot. Keep Nimbus open while it works; refreshing Nimbus itself closes it when it's done.")
         }
     }
 
@@ -279,6 +289,19 @@ struct ContentView: View {
         Button("Open with JIT", systemImage: "bolt.fill") { model.enableJIT(bundleID: bundleID, name: name) }
             .tint(.yellow)
             .disabled(model.isBusy || !model.isConnected)
+    }
+
+    /// Deactivates an app to free its slot while keeping its data, or activates it again.
+    @ViewBuilder private func activationButton(bundleID: String, name: String) -> some View {
+        if model.isActive(bundleID) {
+            Button("Deactivate", systemImage: "pause.circle") { model.deactivate(bundleID: bundleID, name: name) }
+                .tint(.indigo)
+                .disabled(model.isBusy || !model.isConnected)
+        } else {
+            Button("Activate", systemImage: "play.circle") { model.activate(bundleID: bundleID, name: name) }
+                .tint(.green)
+                .disabled(model.isBusy || !model.isConnected)
+        }
     }
 
     private func removeButton(_ app: DeviceApp) -> some View {
@@ -301,7 +324,9 @@ struct ContentView: View {
 
     @ViewBuilder private func expiry(of app: LibraryApp) -> some View {
         let expires = model.expiry(of: app)
-        if expires < .now {
+        if !model.isActive(app.bundleID) {
+            Text("Deactivated. Its data is kept, and it doesn't take up a slot.").foregroundStyle(.secondary)
+        } else if expires < .now {
             Text("Expired. Refresh to use it again.").foregroundStyle(.red)
         } else {
             Text("Expires \(expires.formatted(.relative(presentation: .named)))")

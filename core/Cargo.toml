@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 rootcause = "0.12"
 anyhow = "1.0.104"
-idevice = { version = "0.1.68", default-features = false, features = ["usbmuxd", "tcp", "remote_pairing", "rsd", "tunnel_tcp_stack", "core_device", "core_device_proxy", "debug_proxy", "cryptexd", "ring"] }
+idevice = { version = "0.1.68", default-features = false, features = ["usbmuxd", "tcp", "remote_pairing", "rsd", "tunnel_tcp_stack", "core_device", "core_device_proxy", "debug_proxy", "cryptexd", "misagent", "ring"] }
 isideload = "0.5.2"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde = { version = "1.0.229", features = ["derive"] }

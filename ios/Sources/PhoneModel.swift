@@ -22,6 +22,8 @@ enum Library {
     static let identityFile = support.appendingPathComponent("identity.json")
     /// The engine's signing key and the state that identifies the Mac to Apple.
     static let storage = support.appendingPathComponent("Storage", isDirectory: true)
+    /// Profiles of deactivated apps, kept to activate them again.
+    static let profiles = support.appendingPathComponent("Profiles", isDirectory: true)
 
     static func load() -> [LibraryApp] {
         guard let data = try? Data(contentsOf: file) else { return [] }
@@ -277,7 +279,19 @@ final class PhoneModel {
     /// Apps on this device signed by this Apple ID; nil when that isn't known yet.
     var usedAppSlots: Int? {
         guard let teamID, let deviceApps else { return nil }
-        return deviceApps.filter { $0.bundleId.contains(teamID) }.count
+        // Deactivated apps don't count.
+        return deviceApps.filter { $0.bundleId.contains(teamID) && $0.active != false }.count
+    }
+
+    /// False for an app that's deactivated: on the device with its data, but not usable.
+    func isActive(_ bundleID: String) -> Bool {
+        deviceApps?.first { $0.bundleId == bundleID }?.active != false
+    }
+
+    /// The apps a refresh of everything covers. Refreshing a deactivated app would activate
+    /// it and take up a slot.
+    private var appsToRefresh: [LibraryApp] {
+        refreshableApps.filter { isActive($0.bundleID) }
     }
 
     /// Apps Nimbus can refresh: known, with their IPA here, and still on the device.
@@ -350,7 +364,7 @@ final class PhoneModel {
             }
             if refreshIfDue, canAutoRefresh {
                 lastAutoRefresh = .now
-                refresh(refreshableApps)
+                refresh(appsToRefresh)
             }
         } catch {
             connection = .unreachable
@@ -415,7 +429,7 @@ final class PhoneModel {
     // MARK: Refreshing
 
     func refreshAll() {
-        refresh(refreshableApps)
+        refresh(appsToRefresh)
     }
 
     func refresh(_ apps: [LibraryApp]) {
@@ -641,6 +655,56 @@ final class PhoneModel {
         }
     }
 
+    // MARK: Deactivating
+
+    /// Takes an app's profile off the device. The app and its data stay, but it won't open and
+    /// no longer counts towards the three apps a free Apple ID allows.
+    func deactivate(bundleID: String, name: String) {
+        guard !isBusy, case .connected(let device) = connection else { return }
+        phase = .working
+        status = "Deactivating \(name)…"
+        progress = nil
+        configure()
+        Task {
+            do {
+                _ = try await Engine.runOnce("deactivate", args: [device.udid, bundleID, Library.profiles.path])
+                phase = .done
+                status = "\(name) is deactivated. Its data is kept, and a slot is free."
+            } catch {
+                fail(error.localizedDescription)
+            }
+            await check(refreshIfDue: false)
+        }
+    }
+
+    /// Puts an app's profile back. When Nimbus has no usable profile left, refreshing the app
+    /// gives it a new one, which needs the app's .ipa.
+    func activate(bundleID: String, name: String) {
+        guard !isBusy, case .connected(let device) = connection else { return }
+        if let used = usedAppSlots, used >= Self.freeAppSlots {
+            return fail("All \(Self.freeAppSlots) app slots on this device are in use. Deactivate or remove an app first.")
+        }
+        phase = .working
+        status = "Activating \(name)…"
+        progress = nil
+        configure()
+        Task {
+            do {
+                _ = try await Engine.runOnce("activate", args: [device.udid, bundleID, Library.profiles.path])
+                phase = .done
+                status = "\(name) is activated."
+                await check(refreshIfDue: false)
+            } catch {
+                phase = .idle
+                if let app = refreshableApps.first(where: { $0.bundleID == bundleID }) {
+                    refresh([app])
+                } else {
+                    fail(error.localizedDescription)
+                }
+            }
+        }
+    }
+
     // MARK: JIT
 
     /// Starts an app with JIT enabled, by attaching to it as its debugger for a moment.
@@ -685,7 +749,7 @@ final class PhoneModel {
 
     /// When the first app that Nimbus can refresh expires.
     var nextExpiry: Date? {
-        refreshableApps.map(expiry(of:)).min()
+        appsToRefresh.map(expiry(of:)).min()
     }
 
     private var isRefreshDue: Bool {
@@ -728,7 +792,7 @@ final class PhoneModel {
             return false
         }
         lastAutoRefresh = .now
-        await run(jobs(for: refreshableApps), automatic: true)
+        await run(jobs(for: appsToRefresh), automatic: true)
         return phase == .done
     }
 

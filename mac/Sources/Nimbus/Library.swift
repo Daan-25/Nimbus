@@ -9,6 +9,9 @@ enum Library {
         return url
     }()
 
+    /// Profiles of deactivated apps, kept to activate them again.
+    static let profilesFolder = folder.appendingPathComponent("Profiles", isDirectory: true)
+
     static let ipaFolder: URL = {
         let url = folder.appendingPathComponent("IPAs", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

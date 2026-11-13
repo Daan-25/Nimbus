@@ -15,8 +15,9 @@ It's an alternative to AltStore and SideStore, built to remove the parts that ge
   extends Apple's block. Nimbus doesn't retry. It tells you when it's sensible to try again.
 - **Refreshes in the background.** Nimbus lives in the menu bar and refreshes your apps two days before they
   expire, over a cable or Wi-Fi. It refreshes all apps with one sign-in, and never more than once every six hours.
-- **Shows your limits.** See how many of your 3 app slots are used and how many app IDs you have left this week,
-  and remove apps from your device to free a slot.
+- **Shows your limits.** See how many of your 3 app slots are used and how many app IDs you have left this week.
+  Remove an app to free a slot, or deactivate it: it keeps its data and gives up its slot until you
+  activate it again.
 - **Works with AltStore sources.** Add a source, read what an app is and see its screenshots, then install and
   update it from Nimbus. Downloads are
   checked against the source's checksum when it has one.
@@ -135,6 +136,8 @@ downloading those needs a Patreon sign-in.
   - [x] Browse and install apps from sources on the iPhone
   - [x] Enable JIT, also on iOS 26 and later for apps that follow the StikJIT protocol
   - [x] Mount the developer disk image from Nimbus, so JIT also works after a restart (iOS 26.4 and later)
+- [x] Deactivate an app and activate it again, keeping its data
+- [ ] Confirm that a deactivated app frees its slot for a fourth app
 
 ## Credits
 

@@ -13,6 +13,7 @@ use idevice::{
     core_device_proxy::CoreDeviceProxy,
     installation_proxy::InstallationProxyClient,
     lockdown::LockdownClient,
+    misagent::MisagentClient,
     provider::UsbmuxdProvider,
     remote_pairing::{
         RemotePairingClient, RpPairingFile, RpPairingSocket, connect_tls_psk_tunnel_native,
@@ -84,6 +85,16 @@ impl Link {
             Link::Tunnel(tunnel) => {
                 InstallationProxyClient::connect_rsd(&mut tunnel.adapter, &mut tunnel.services)
                     .await
+            }
+        }
+    }
+
+    /// The service that holds the device's provisioning profiles.
+    pub async fn misagent(&mut self) -> Result<MisagentClient, IdeviceError> {
+        match self {
+            Link::Usb(provider) => MisagentClient::connect(provider).await,
+            Link::Tunnel(tunnel) => {
+                MisagentClient::connect_rsd(&mut tunnel.adapter, &mut tunnel.services).await
             }
         }
     }

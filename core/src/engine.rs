@@ -68,6 +68,8 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
         "uninstall" => uninstall(arg(0)?, arg(1)?).await,
         "install" => install().await,
         "diagnose" => device::diagnose().await,
+        "deactivate" => crate::profiles::deactivate(arg(0)?, arg(1)?, arg(2)?).await,
+        "activate" => crate::profiles::activate(arg(0)?, arg(1)?, arg(2)?).await,
         "inspect" => inspect(Path::new(arg(0)?)),
         "jit" => crate::jit::enable(arg(0)?, arg(1)?).await,
         "ddi" => ddi(arg(0)?, args.get(1).map(String::as_str)).await,
@@ -139,6 +141,10 @@ async fn list_apps(udid: &str) -> Result<()> {
         .await
         .map_err(|e| anyhow!("Can't read the apps on your device: {e}"))?;
 
+    // An app without a profile is deactivated: still there, but it won't open and doesn't
+    // count towards the limit. When the profiles can't be read, that stays unknown.
+    let profiles = crate::profiles::installed(&mut link).await.ok();
+
     let mut list = Vec::new();
     for (bundle_id, info) in apps {
         let Some(info) = info.as_dictionary() else {
@@ -158,6 +164,9 @@ async fn list_apps(udid: &str) -> Result<()> {
             "name": text("CFBundleDisplayName").or_else(|| text("CFBundleName")).unwrap_or(bundle_id.clone()),
             "version": text("CFBundleShortVersionString"),
             "signer": signer,
+            "active": profiles.as_ref().map(|profiles| {
+                profiles.iter().any(|profile| profile.covers(&bundle_id))
+            }),
         }));
     }
     list.sort_by_key(|a| a["name"].as_str().unwrap_or_default().to_lowercase());
@@ -306,10 +315,13 @@ async fn install_one<C: MaxCertsCallback>(
     // Signing is the first half of the work for each app, transferring and installing the second.
     let overall = move |part: f64| (index as f64 + part.clamp(0.0, 1.0)) / count as f64;
 
+    // Apps made for AltStore are told their app group before they're signed.
+    let unpacked = unpack_for_app_groups(ipa, &team.team_id)?;
+
     io::log("Signing…");
-    let (signed, _) = sideloader
+    let signing = sideloader
         .sign_app(
-            ipa.to_path_buf(),
+            unpacked.clone().unwrap_or_else(|| ipa.to_path_buf()),
             Some(team.clone()),
             increased_memory_limit,
             Some(|p: f32| async move {
@@ -319,7 +331,16 @@ async fn install_one<C: MaxCertsCallback>(
             None,
         )
         .await
-        .map_err(|e| anyhow!("Signing failed: {e}"))?;
+        .map_err(|e| anyhow!("Signing failed: {e}"));
+    let (signed, _) = match signing {
+        Ok(signed) => signed,
+        Err(error) => {
+            if let Some(app) = &unpacked {
+                remove_unpacked(app);
+            }
+            return Err(error);
+        }
+    };
 
     let info = signed_app_info(&signed);
 
@@ -331,13 +352,7 @@ async fn install_one<C: MaxCertsCallback>(
         .await
         .map_err(|e| anyhow!("Installing failed: {e}"));
 
-    // sign_app extracts the IPA to <temp>/<name>.ipa_extracted/Payload/<name>.app.
-    if let Some(extracted) = signed.parent().and_then(Path::parent)
-        && extracted.starts_with(std::env::temp_dir())
-        && extracted.to_string_lossy().ends_with("_extracted")
-    {
-        let _ = std::fs::remove_dir_all(extracted);
-    }
+    remove_unpacked(&signed);
     result?;
 
     let mut installed = info?;
@@ -365,16 +380,23 @@ async fn ddi(udid: &str, action: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Reads what an IPA contains without unpacking it, to check a file before signing in for it:
-/// {"event": "ipa", "bundle_id", "name", "version", "minimum_os"}.
-fn inspect(ipa: &Path) -> Result<()> {
-    use std::io::Read;
+/// Removes the folder an IPA was unpacked into, given the app inside it:
+/// <temp>/<name>.ipa_extracted/Payload/<name>.app. sign_app unpacks to the same place.
+fn remove_unpacked(app: &Path) {
+    if let Some(extracted) = app.parent().and_then(Path::parent)
+        && extracted.starts_with(std::env::temp_dir())
+        && extracted.to_string_lossy().ends_with("_extracted")
+    {
+        let _ = std::fs::remove_dir_all(extracted);
+    }
+}
 
-    let not_an_app = || anyhow!("This isn't a valid app (.ipa) file.");
-    let file = std::fs::File::open(ipa).context("Can't open the file")?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|_| not_an_app())?;
-    // Payload/<App>.app/Info.plist, not the Info.plist files of frameworks and extensions.
-    let entry = archive
+/// The name of Payload/<App>.app/Info.plist in an IPA: the app's own, not the Info.plist
+/// files of its frameworks and extensions.
+fn main_info_plist<R: std::io::Read + std::io::Seek>(
+    archive: &zip::ZipArchive<R>,
+) -> Option<String> {
+    archive
         .file_names()
         .find(|name| {
             let parts: Vec<&str> = name.split('/').collect();
@@ -384,7 +406,69 @@ fn inspect(ipa: &Path) -> Result<()> {
                 && parts[2] == "Info.plist"
         })
         .map(str::to_string)
-        .ok_or_else(not_an_app)?;
+}
+
+/// Apps made for AltStore, such as Clip and Delta, look up their app group in their
+/// Info.plist under ALTAppGroups, and crash when the group there isn't one they're signed for.
+/// Signing gives an app its own group, named after its new bundle ID, so that name has to go
+/// into the Info.plist before signing. Unpacks such an app, writes the group into it and its
+/// extensions, and returns the app's folder to sign. Returns None for every other app.
+fn unpack_for_app_groups(ipa: &Path, team_id: &str) -> Result<Option<PathBuf>> {
+    use std::io::Read;
+
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(ipa)?)
+        .map_err(|_| anyhow!("This isn't a valid app (.ipa) file."))?;
+    let Some(entry) = main_info_plist(&archive) else {
+        return Ok(None);
+    };
+    let mut data = Vec::new();
+    archive.by_name(&entry)?.read_to_end(&mut data)?;
+    let Ok(info) = plist::from_bytes::<plist::Dictionary>(&data) else {
+        return Ok(None);
+    };
+    let (true, Some(bundle_id)) = (
+        info.contains_key("ALTAppGroups"),
+        info.get("CFBundleIdentifier").and_then(|v| v.as_string()),
+    ) else {
+        return Ok(None);
+    };
+    // The same name sign_app gives the group: "group." and the signed bundle ID.
+    let group = format!("group.{bundle_id}.{team_id}");
+
+    let name = ipa.file_name().unwrap_or_default().to_string_lossy();
+    let folder = std::env::temp_dir().join(format!("{name}_extracted"));
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir_all(&folder)?;
+    archive
+        .extract(&folder)
+        .context("Couldn't unpack the app")?;
+
+    let app = folder.join(Path::new(&entry).parent().unwrap_or(Path::new("")));
+    let mut plists = vec![app.join("Info.plist")];
+    if let Ok(extensions) = std::fs::read_dir(app.join("PlugIns")) {
+        plists.extend(extensions.flatten().map(|e| e.path().join("Info.plist")));
+    }
+    for path in plists.iter().filter(|path| path.is_file()) {
+        let mut info: plist::Dictionary =
+            plist::from_file(path).context("Couldn't read the app's Info.plist")?;
+        info.insert(
+            "ALTAppGroups".to_string(),
+            plist::Value::Array(vec![plist::Value::String(group.clone())]),
+        );
+        plist::to_file_binary(path, &info).context("Couldn't change the app's Info.plist")?;
+    }
+    Ok(Some(app))
+}
+
+/// Reads what an IPA contains without unpacking it, to check a file before signing in for it:
+/// {"event": "ipa", "bundle_id", "name", "version", "minimum_os"}.
+fn inspect(ipa: &Path) -> Result<()> {
+    use std::io::Read;
+
+    let not_an_app = || anyhow!("This isn't a valid app (.ipa) file.");
+    let file = std::fs::File::open(ipa).context("Can't open the file")?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|_| not_an_app())?;
+    let entry = main_info_plist(&archive).ok_or_else(not_an_app)?;
     let mut data = Vec::new();
     archive
         .by_name(&entry)
@@ -523,4 +607,33 @@ async fn revoke_certs_prompt(
         })
         .unwrap_or_default();
     Ok((!serials.is_empty()).then_some(serials))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn altstore_apps_get_their_app_group() {
+        // Clip from AltStore's source, when it's there; the test needs a real app.
+        let Ok(ipa) = std::env::var("NIMBUS_TEST_IPA") else {
+            return;
+        };
+        let app = unpack_for_app_groups(Path::new(&ipa), "TEAM123456")
+            .unwrap()
+            .expect("an app with ALTAppGroups");
+        let info: plist::Dictionary = plist::from_file(app.join("Info.plist")).unwrap();
+        let bundle_id = info["CFBundleIdentifier"].as_string().unwrap();
+        let expected = plist::Value::Array(vec![plist::Value::String(format!(
+            "group.{bundle_id}.TEAM123456"
+        ))]);
+        assert_eq!(info["ALTAppGroups"], expected);
+        for extension in std::fs::read_dir(app.join("PlugIns")).unwrap().flatten() {
+            let info: plist::Dictionary =
+                plist::from_file(extension.path().join("Info.plist")).unwrap();
+            assert_eq!(info["ALTAppGroups"], expected);
+        }
+        remove_unpacked(&app);
+        assert!(!app.exists());
+    }
 }
