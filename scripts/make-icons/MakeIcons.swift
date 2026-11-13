@@ -28,6 +28,14 @@ struct MakeIcons {
         try write(size: 1024, opaque: true, to: folder.appendingPathComponent("ios-1024.png")) { context, size in
             NimbusIcon.drawAppIcon(in: context, size: size, forMac: false)
         }
+        // The picture behind the icons in the disk image, for normal and Retina screens.
+        for (scale, name) in [(1, "dmg-background.png"), (2, "dmg-background@2x.png")] {
+            let pixels = DiskImageBackground.size
+            try write(width: Int(pixels.width) * scale, height: Int(pixels.height) * scale, opaque: true,
+                      to: folder.appendingPathComponent(name)) { context, _ in
+                DiskImageBackground.draw(in: context, scale: CGFloat(scale))
+            }
+        }
         try write(size: 256, to: folder.appendingPathComponent("menu-bar-preview.png")) { context, size in
             let black = CGColor(gray: 0, alpha: 1)
             NimbusIcon.drawPlanet(in: context, rect: CGRect(x: 0, y: 0, width: size, height: size),
@@ -36,8 +44,13 @@ struct MakeIcons {
     }
 
     static func write(size: Int, opaque: Bool = false, to url: URL, draw: (CGContext, CGFloat) -> Void) throws {
+        try write(width: size, height: size, opaque: opaque, to: url, draw: draw)
+    }
+
+    static func write(width: Int, height: Int, opaque: Bool = false, to url: URL, draw: (CGContext, CGFloat) -> Void) throws {
+        let size = width
         let alpha = opaque ? CGImageAlphaInfo.noneSkipLast : CGImageAlphaInfo.premultipliedLast
-        guard let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                                       space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: alpha.rawValue)
         else { throw CocoaError(.fileWriteUnknown) }
         draw(context, CGFloat(size))

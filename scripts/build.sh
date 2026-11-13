@@ -28,6 +28,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/build/icons/Nimbus.icns" "$APP/Contents/Resources/Nimbus.icns"
 cp "$SWIFT_BIN/Nimbus" "$APP/Contents/MacOS/Nimbus"
 cp "$ROOT/core/target/release/nimbus-helper" "$APP/Contents/MacOS/nimbus-helper"
+# The debugging tables name every source file with its full path, user name included.
+strip -S -x "$APP/Contents/MacOS/Nimbus" "$APP/Contents/MacOS/nimbus-helper" 2> /dev/null
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

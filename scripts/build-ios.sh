@@ -52,6 +52,9 @@ xcrun --sdk "$SDK" swiftc \
     -framework Security -framework CoreFoundation -framework SystemConfiguration -liconv \
     -o "$APP/Nimbus"
 
+# The debugging tables name every source file with its full path, user name included.
+strip -S -x "$APP/Nimbus" 2> /dev/null
+
 cat > "$APP/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
