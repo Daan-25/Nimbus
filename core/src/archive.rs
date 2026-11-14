@@ -202,8 +202,16 @@ pub fn copy_folder(from: &Path, to: &Path) -> Result<()> {
 /// copied first.
 pub async fn archive(udid: &str, bundle_id: &str, folder: &str) -> Result<()> {
     let mut link = device::link_for(Some(udid)).await?;
+    let (files, bytes) = archive_with(&mut link, bundle_id, folder).await?;
+    io::emit(
+        json!({ "event": "archived", "bundle_id": bundle_id, "files": files, "bytes": bytes }),
+    );
+    Ok(())
+}
+
+async fn archive_with(link: &mut Link, bundle_id: &str, folder: &str) -> Result<(u64, u64)> {
     io::log("Saving the app's data…");
-    let (files, bytes) = backup_with(&mut link, bundle_id, &data_folder(folder, bundle_id)).await?;
+    let (files, bytes) = backup_with(link, bundle_id, &data_folder(folder, bundle_id)).await?;
 
     io::log("Removing the app…");
     let mut apps = link
@@ -213,28 +221,44 @@ pub async fn archive(udid: &str, bundle_id: &str, folder: &str) -> Result<()> {
     apps.uninstall(bundle_id, None)
         .await
         .map_err(|e| anyhow!("The data is saved, but the app couldn't be removed: {e}"))?;
-    io::emit(
-        json!({ "event": "archived", "bundle_id": bundle_id, "files": files, "bytes": bytes }),
-    );
-    Ok(())
+    Ok((files, bytes))
 }
 
 /// Puts an archived app back from the copy that was kept when it was signed, and its data
 /// with it. That takes no sign-in, as long as the signature in the copy is still good. When it
 /// isn't, this fails before touching the device, and the app has to be installed afresh first.
 pub async fn unarchive(udid: &str, bundle_id: &str, folder: &str, cache: &str) -> Result<()> {
-    let app = signed_app(Path::new(cache), bundle_id);
+    let app = good_signed_copy(Path::new(cache), bundle_id)?;
+    let mut link = device::link_for(Some(udid)).await?;
+    let (files, bytes) = unarchive_with(&mut link, bundle_id, folder, &app).await?;
+    io::emit(
+        json!({ "event": "unarchived", "bundle_id": bundle_id, "files": files, "bytes": bytes }),
+    );
+    Ok(())
+}
+
+/// The copy of an app kept when it was signed, when its signature is still good.
+fn good_signed_copy(cache: &Path, bundle_id: &str) -> Result<std::path::PathBuf> {
+    let app = signed_app(cache, bundle_id);
     let still_good = std::fs::read(app.join("embedded.mobileprovision"))
         .is_ok_and(|profile| crate::profiles::is_valid(&profile));
-    if !still_good {
-        return Err(anyhow!(
+    if still_good {
+        Ok(app)
+    } else {
+        Err(anyhow!(
             "Nimbus has no signed copy of this app that's still good, so it has to sign it again."
-        ));
+        ))
     }
+}
 
-    let mut link = device::link_for(Some(udid)).await?;
+async fn unarchive_with(
+    link: &mut Link,
+    bundle_id: &str,
+    folder: &str,
+    app: &Path,
+) -> Result<(u64, u64)> {
     io::log("Installing the app…");
-    link.install(&app, |progress| {
+    link.install(app, |progress| {
         io::emit(json!({ "event": "progress", "value": progress as f64 / 100.0 * 0.7 }));
     })
     .await
@@ -244,11 +268,51 @@ pub async fn unarchive(udid: &str, bundle_id: &str, folder: &str, cache: &str) -
     let (mut files, mut bytes) = (0, 0);
     if data.is_dir() {
         io::log("Putting the app's data back…");
-        (files, bytes) = restore_with(&mut link, bundle_id, &data).await?;
+        (files, bytes) = restore_with(link, bundle_id, &data).await?;
         let _ = std::fs::remove_dir_all(&data);
     }
-    io::emit(
-        json!({ "event": "unarchived", "bundle_id": bundle_id, "files": files, "bytes": bytes }),
-    );
+    Ok((files, bytes))
+}
+
+/// Opens an archived app in one go: archives `make_room` first when given, puts the app and
+/// its data back, and starts it. Takes no sign-in. Both apps need a signed copy that's still
+/// good, which is checked before anything changes; when putting the app back fails after
+/// `make_room` was archived, that one is put back again.
+pub async fn swap(
+    udid: &str,
+    bundle_id: &str,
+    folder: &str,
+    cache: &str,
+    make_room: Option<&str>,
+) -> Result<()> {
+    let cache = Path::new(cache);
+    let app = good_signed_copy(cache, bundle_id)?;
+    let room = match make_room {
+        Some(other) => Some((
+            other,
+            good_signed_copy(cache, other).map_err(|_| {
+                anyhow!("The app that would make room has no signed copy that's still good.")
+            })?,
+        )),
+        None => None,
+    };
+
+    let mut link = device::link_for(Some(udid)).await?;
+    if let Some((other, _)) = &room {
+        io::emit(json!({ "event": "making_room", "bundle_id": other }));
+        archive_with(&mut link, other, folder).await?;
+    }
+    if let Err(error) = unarchive_with(&mut link, bundle_id, folder, &app).await {
+        if let Some((other, copy)) = &room {
+            io::log("Putting the other app back…");
+            let _ = unarchive_with(&mut link, other, folder, copy).await;
+        }
+        return Err(error);
+    }
+
+    io::log("Opening the app…");
+    let mut tunnel = link.into_tunnel(udid).await?;
+    tunnel.launch(bundle_id, false).await?;
+    io::emit(json!({ "event": "swapped", "bundle_id": bundle_id, "archived": make_room }));
     Ok(())
 }

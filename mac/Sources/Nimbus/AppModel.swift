@@ -140,6 +140,8 @@ final class AppModel {
         var origin: Origin?
         /// Nimbus for iPhone gets its pairing file once it's installed.
         var isPhoneApp = false
+        /// For an archived app: sign it and keep the signed copy, without installing it.
+        var signOnly = false
     }
 
     private struct Origin {
@@ -436,12 +438,18 @@ final class AppModel {
                 Library.replaceIPA(app.ipaFile, with: newest)
             }
         }
-        run(apps.map { Job(ipaFile: $0.ipaFile, name: $0.name, existing: $0) }, automatic: automatic)
+        // Archived apps are only signed again, so they can still go back without signing in.
+        run(apps.map { Job(ipaFile: $0.ipaFile, name: $0.name, existing: $0, signOnly: isArchived($0)) }, automatic: automatic)
+    }
+
+    /// The apps a refresh of everything covers: the ones on the device, and the archived ones.
+    /// Refreshing a deactivated app would activate it, which is for the user to decide.
+    private var appsToRefresh: [LibraryApp] {
+        libraryAppsOnDevice.filter { (isInstalled($0) != false && isActive($0.bundleID)) || isArchived($0) }
     }
 
     func refreshAll() {
-        // Refreshing a deactivated app would activate it, which is for the user to decide.
-        refresh(libraryAppsOnDevice.filter { isInstalled($0) != false && isActive($0.bundleID) })
+        refresh(appsToRefresh)
     }
 
     func forget(_ app: LibraryApp) {
@@ -648,7 +656,7 @@ final class AppModel {
         if let last = lastAutoRefresh, Date.now.timeIntervalSince(last) < Self.autoRefreshInterval {
             return
         }
-        let apps = libraryAppsOnDevice.filter { isInstalled($0) == true && isActive($0.bundleID) }
+        let apps = appsToRefresh.filter { isInstalled($0) == true || isArchived($0) }
         let deadline = Date.now.addingTimeInterval(Self.refreshWindow)
         // Refresh every app at once, so it takes a single sign-in.
         guard apps.contains(where: { expiry(of: $0) < deadline }) else { return }
@@ -695,6 +703,7 @@ final class AppModel {
                 "apps": jobs.map { Library.ipaFolder.appendingPathComponent($0.ipaFile).path },
                 "udid": device.udid,
                 "signed_cache": Library.signedFolder.path,
+                "sign_only": jobs.filter(\.signOnly).map { Library.ipaFolder.appendingPathComponent($0.ipaFile).path },
             ])
         } catch {
             fail(error.localizedDescription)
@@ -905,7 +914,7 @@ final class AppModel {
             needAttention("Choose a certificate to revoke.")
         case "installing":
             if let index = event.index, jobs.indices.contains(index) {
-                let verb = jobs[index].existing == nil ? "Installing" : "Refreshing"
+                let verb = jobs[index].existing == nil ? "Installing" : jobs[index].signOnly ? "Signing" : "Refreshing"
                 status = "\(verb) \(jobs[index].name)…"
             }
         case "installed":

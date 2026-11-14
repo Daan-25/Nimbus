@@ -36,6 +36,10 @@ struct InstallRequest {
     increased_memory_limit: bool,
     /// Where to keep each app as it was signed, to put an archived app back without signing in.
     signed_cache: Option<PathBuf>,
+    /// Apps among `apps` that are archived: they're signed and kept in `signed_cache`, so they
+    /// can go back quickly, but not installed, since they're not meant to take up a slot.
+    #[serde(default)]
+    sign_only: Vec<PathBuf>,
 }
 
 /// Runs one command and reports a failure as an "error" event. Returns whether it succeeded.
@@ -75,6 +79,16 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
         "wake" => crate::profiles::wake(arg(0)?, arg(1)?, arg(2)?).await,
         "archive" => crate::archive::archive(arg(0)?, arg(1)?, arg(2)?).await,
         "unarchive" => crate::archive::unarchive(arg(0)?, arg(1)?, arg(2)?, arg(3)?).await,
+        "swap" => {
+            crate::archive::swap(
+                arg(0)?,
+                arg(1)?,
+                arg(2)?,
+                arg(3)?,
+                args.get(4).map(String::as_str),
+            )
+            .await
+        }
         "backup" => crate::archive::backup(arg(0)?, arg(1)?, arg(2)?).await,
         "restore" => crate::archive::restore(arg(0)?, arg(1)?, arg(2)?).await,
         "inspect" => inspect(Path::new(arg(0)?)),
@@ -265,6 +279,7 @@ async fn install() -> Result<()> {
         let result = if !path.is_file() {
             Err(anyhow!("Can't find {}", path.display()))
         } else {
+            let install = !request.sign_only.contains(&path);
             install_one(
                 &mut sideloader,
                 &mut link,
@@ -272,6 +287,7 @@ async fn install() -> Result<()> {
                 &path,
                 request.increased_memory_limit,
                 request.signed_cache.as_deref(),
+                install,
                 index,
                 count,
             )
@@ -318,6 +334,7 @@ async fn install_one<C: MaxCertsCallback>(
     ipa: &Path,
     increased_memory_limit: bool,
     signed_cache: Option<&Path>,
+    install: bool,
     index: usize,
     count: usize,
 ) -> Result<serde_json::Value> {
@@ -353,15 +370,21 @@ async fn install_one<C: MaxCertsCallback>(
 
     let info = signed_app_info(&signed);
 
-    io::log("Installing…");
-    let result = link
-        .install(&signed, |p| {
+    let result = if install {
+        io::log("Installing…");
+        link.install(&signed, |p| {
             io::emit(json!({ "event": "progress", "value": overall(0.5 + p as f64 / 200.0) }));
         })
         .await
-        .map_err(|e| anyhow!("Installing failed: {e}"));
+        .map_err(|e| anyhow!("Installing failed: {e}"))
+    } else if signed_cache.is_none() {
+        Err(anyhow!("Nowhere to keep the signed app."))
+    } else {
+        io::log("Keeping the signed app for when it's restored…");
+        Ok(())
+    };
 
-    // Keep the signed app only when it's really on the device now.
+    // Keep the signed app only when it's really on the device now, or meant to be kept.
     if let (Ok(()), Ok(info), Some(cache)) = (&result, &info, signed_cache)
         && let Some(bundle_id) = info["bundle_id"].as_str()
     {
@@ -378,6 +401,7 @@ async fn install_one<C: MaxCertsCallback>(
     let mut installed = info?;
     installed["event"] = json!("installed");
     installed["index"] = json!(index);
+    installed["kept_only"] = json!(!install);
     Ok(installed)
 }
 

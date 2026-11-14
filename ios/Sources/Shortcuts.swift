@@ -59,3 +59,64 @@ struct NimbusShortcuts: AppShortcutsProvider {
         )
     }
 }
+
+/// An app Nimbus looks after, on the device or archived, for the Open App action.
+struct NimbusAppEntity: AppEntity {
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "App"
+    static let defaultQuery = NimbusAppQuery()
+
+    let id: String
+    let name: String
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: "\(name)")
+    }
+}
+
+struct NimbusAppQuery: EntityQuery {
+    @MainActor
+    func entities(for identifiers: [String]) async throws -> [NimbusAppEntity] {
+        suggested().filter { identifiers.contains($0.id) }
+    }
+
+    @MainActor
+    func suggestedEntities() async throws -> [NimbusAppEntity] {
+        suggested()
+    }
+
+    @MainActor
+    private func suggested() -> [NimbusAppEntity] {
+        let model = PhoneModel.shared
+        let apps = model.library.isEmpty ? Library.load() + Library.loadLocal() : model.refreshableApps + model.archivedApps
+        var seen = Set<String>()
+        return apps
+            .filter { $0.bundleID != Bundle.main.bundleIdentifier && seen.insert($0.bundleID).inserted }
+            .map { NimbusAppEntity(id: $0.bundleID, name: $0.name) }
+    }
+}
+
+/// "Open App" for the Shortcuts app: opens an app Nimbus looks after, putting it back first
+/// when it's archived. Added to the Home Screen, it works like the app's own icon, even for an
+/// app that isn't on the device right now.
+struct OpenAppIntent: AppIntent {
+    static let title: LocalizedStringResource = "Open App"
+    static let description = IntentDescription(
+        "Opens an app Nimbus looks after. When it's archived, Nimbus puts it back first, archiving the app you used least when all slots are in use. LocalDevVPN has to be on."
+    )
+
+    @Parameter(title: "App")
+    var app: NimbusAppEntity
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Open \(\.$app)")
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let outcome = await PhoneModel.shared.openFromShortcut(app.id)
+        guard outcome.succeeded else {
+            throw RefreshFailure(message: outcome.message)
+        }
+        return .result(dialog: IntentDialog(stringLiteral: outcome.message))
+    }
+}

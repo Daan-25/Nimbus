@@ -78,6 +78,17 @@ struct ContentView: View {
             }
         }
         .confirmationDialog(
+            "Archive \(model.pendingSwap?.archive.name ?? "an app") to make room?",
+            isPresented: Binding(get: { model.pendingSwap != nil }, set: { if !$0 { model.pendingSwap = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Archive and Open") { model.confirmPendingSwap() }
+        } message: {
+            if let pending = model.pendingSwap {
+                Text("All slots are in use. To open \(pending.open.name), Nimbus would archive \(pending.archive.name). That app shares data with its widgets or extensions, and that part of its data isn't saved.")
+            }
+        }
+        .confirmationDialog(
             "Archive \(archiving?.name ?? "this app")?",
             isPresented: Binding(get: { archiving != nil }, set: { if !$0 { archiving = nil } }),
             titleVisibility: .visible
@@ -252,6 +263,9 @@ struct ContentView: View {
                 }
                 .swipeActions(edge: .leading) {
                     if app.bundleID != Bundle.main.bundleIdentifier {
+                        Button("Open", systemImage: "arrow.up.forward.app") { model.launch(app) }
+                            .tint(.green)
+                            .disabled(model.isBusy || !model.isConnected)
                         jitButton(bundleID: app.bundleID, name: app.name)
                     }
                 }
@@ -267,10 +281,13 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Restore") { model.restore(app) }
+                    // Puts it back and opens it, archiving another app when all slots are in use.
+                    Button("Open") { model.open(app) }
                         .buttonStyle(.bordered)
                         .disabled(model.isBusy || !model.isConnected)
                 }
+                .contentShape(Rectangle())
+                .onTapGesture { if !model.isBusy && model.isConnected { model.open(app) } }
             }
             ForEach(model.otherApps) { app in
                 HStack(spacing: 12) {
@@ -309,7 +326,7 @@ struct ContentView: View {
                 }
             }
         } footer: {
-            Text("Find apps under Browse, add an .ipa file from this device, or open one with Nimbus from Files or Safari. Swipe an app left to remove, archive or deactivate it, or right to open it with JIT. Archiving keeps an app's data and frees its slot. Keep Nimbus open while it works; refreshing Nimbus itself closes it when it's done.")
+            Text("Find apps under Browse, add an .ipa file from this device, or open one with Nimbus from Files or Safari. Tap an archived app to open it: Nimbus puts it back and, when all slots are in use, archives the app you used least. Swipe an app left to remove, archive or deactivate it, or right to open it, also with JIT. Keep Nimbus open while it works; refreshing Nimbus itself closes it when it's done.")
         }
     }
 

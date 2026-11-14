@@ -10,6 +10,7 @@
 //!   nimbus-helper wake UDID BUNDLE_ID FOLDER          opens an app, activating it first when needed
 //!   nimbus-helper archive UDID BUNDLE_ID FOLDER      keeps an app's data in FOLDER and removes the app
 //!   nimbus-helper unarchive UDID BUNDLE_ID FOLDER CACHE   puts the app and its data back, from the signed copy in CACHE
+//!   nimbus-helper swap UDID BUNDLE_ID FOLDER CACHE [MAKE_ROOM]   archives MAKE_ROOM, restores BUNDLE_ID and opens it
 //!   nimbus-helper backup UDID BUNDLE_ID FOLDER       copies an app's data off the device
 //!   nimbus-helper restore UDID BUNDLE_ID FOLDER      copies it back into the app
 //!   nimbus-helper install       reads an install request from stdin, then answers prompts

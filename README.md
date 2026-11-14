@@ -113,7 +113,10 @@ mount it without the Mac. `nimbus-helper ddi UDID` shows whether it's mounted.
 **Archiving.** A free Apple ID allows three sideloaded apps on a device, and the device counts every app
 that's installed. Archiving an app copies its data off the device and removes the app; restoring installs
 it again and copies the data back. Nimbus keeps each app as it was signed, so restoring takes no sign-in
-while that signature is good, which is seven days. It reaches an app's own Documents and Library folders.
+while that signature is good, which is seven days. Refresh signs archived apps again without installing them, so their copies stay good. Tapping an archived app on
+the iPhone puts it back and opens it; when all three slots are in use, Nimbus first archives the app it
+opened or put back longest ago, preferring apps whose data archiving fully keeps. It reaches an app's own
+Documents and Library folders.
 Data an app shares with its extensions through an app group isn't saved, and neither is anything in iCloud
 or the Keychain.
 
@@ -154,7 +157,9 @@ downloading those needs a Patreon sign-in.
   deactivated app still counts towards the three.
 - [x] A Refresh All Apps action for Shortcuts
 - [x] Archive apps to have more than three, and restore them with their data
-- [ ] Let Nimbus pick which app makes room, and open the restored app ("awake on tap")
+- [ ] Tap an archived app to open it, with Nimbus archiving the app used least to make room, also from an
+  Open App action in Shortcuts (built, not yet confirmed on a device)
+- [x] Refresh keeps the signed copies of archived apps good, so restoring never needs a sign-in
 
 ## Credits
 

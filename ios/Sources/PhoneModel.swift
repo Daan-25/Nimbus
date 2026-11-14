@@ -231,6 +231,8 @@ final class PhoneModel {
         let existing: LibraryApp?
         /// Set when installing an app from a source.
         var origin: Origin?
+        /// For an archived app: sign it and keep the signed copy, without installing it.
+        var signOnly = false
 
         var ipaURL: URL { Library.ipaFolder.appendingPathComponent(ipaFile) }
     }
@@ -378,7 +380,7 @@ final class PhoneModel {
             }
             if refreshIfDue, canAutoRefresh {
                 lastAutoRefresh = .now
-                refresh(appsToRefresh)
+                refreshAll()
             }
         } catch {
             connection = .unreachable
@@ -443,7 +445,7 @@ final class PhoneModel {
     // MARK: Refreshing
 
     func refreshAll() {
-        refresh(appsToRefresh)
+        Task { await run(allRefreshJobs, automatic: false) }
     }
 
     func refresh(_ apps: [LibraryApp]) {
@@ -454,6 +456,15 @@ final class PhoneModel {
         // Refreshing Nimbus itself restarts it, so it goes last.
         let ordered = apps.filter { !isNimbusItself($0) } + apps.filter { isNimbusItself($0) }
         return ordered.map { Job(ipaFile: $0.ipaFile, name: $0.name, existing: $0) }
+    }
+
+    /// Every app a refresh of everything covers: the apps on the device, and the archived ones,
+    /// which are only signed again so they can still go back without signing in.
+    private var allRefreshJobs: [Job] {
+        let archived = archivedApps.map { Job(ipaFile: $0.ipaFile, name: $0.name, existing: $0, signOnly: true) }
+        let installed = jobs(for: appsToRefresh)
+        // Archived apps first: Nimbus refreshing itself, which comes last, ends the app.
+        return archived + installed
     }
 
     // MARK: Installing
@@ -674,6 +685,178 @@ final class PhoneModel {
     /// Archived apps that are being installed afresh and still need their data back.
     private var dataToRestore: Set<String> = []
 
+    /// When Nimbus last put an app on the device or opened it, by bundle ID. iOS doesn't tell
+    /// apps when others are used, so this is the best guess at which one you use least.
+    private var lastUsed = UserDefaults.standard.dictionary(forKey: "lastUsed") as? [String: Date] ?? [:] {
+        didSet { defaults.set(lastUsed, forKey: "lastUsed") }
+    }
+
+    /// An archived app the user wants open, and the app that would make room for it, waiting
+    /// for a yes because that app's data isn't all saved by archiving.
+    var pendingSwap: (open: LibraryApp, archive: LibraryApp)?
+
+    /// The copy of an app kept when it was signed.
+    private func signedCopy(_ bundleID: String) -> URL {
+        Library.signed.appendingPathComponent("\(bundleID).app")
+    }
+
+    /// When the signed copy of an app stops working; nil when there is none.
+    func signedCopyExpiry(_ bundleID: String) -> Date? {
+        guard let data = try? Data(contentsOf: signedCopy(bundleID).appendingPathComponent("embedded.mobileprovision")),
+              let start = data.range(of: Data("<?xml".utf8)),
+              let end = data.range(of: Data("</plist>".utf8), options: .backwards),
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: data.subdata(in: start.lowerBound..<end.upperBound), format: nil
+              ) as? [String: Any]
+        else { return nil }
+        return plist["ExpirationDate"] as? Date
+    }
+
+    /// Whether an app can go back without signing in for a while yet.
+    private func canGoBackQuickly(_ bundleID: String) -> Bool {
+        (signedCopyExpiry(bundleID) ?? .distantPast) > Date.now.addingTimeInterval(10 * 60)
+    }
+
+    /// Whether an app keeps data where archiving doesn't reach: an app group it shares with its
+    /// extensions. Apps made for AltStore say so in their Info.plist; apps with extensions
+    /// likely share data with them.
+    func sharesDataOutsideItself(_ bundleID: String) -> Bool {
+        let app = signedCopy(bundleID)
+        let info = NSDictionary(contentsOf: app.appendingPathComponent("Info.plist"))
+        let extensions = (try? FileManager.default.contentsOfDirectory(atPath: app.appendingPathComponent("PlugIns").path)) ?? []
+        return info?["ALTAppGroups"] != nil || !extensions.isEmpty
+    }
+
+    /// The app to archive to make room: one that can go back quickly, used least recently.
+    /// Apps whose data archiving fully keeps come first.
+    private func appToMakeRoom(for target: LibraryApp) -> (app: LibraryApp, safe: Bool)? {
+        let candidates = refreshableApps
+            .filter { $0.bundleID != target.bundleID && !isNimbusItself($0) && isActive($0.bundleID) }
+            .filter { canGoBackQuickly($0.bundleID) }
+            .sorted { (lastUsed[$0.bundleID] ?? $0.installedAt) < (lastUsed[$1.bundleID] ?? $1.installedAt) }
+        if let safe = candidates.first(where: { !sharesDataOutsideItself($0.bundleID) }) {
+            return (safe, true)
+        }
+        return candidates.first.map { ($0, false) }
+    }
+
+    /// Opens an archived app: makes room by archiving another when all slots are in use, puts
+    /// the app and its data back, and starts it. Takes no sign-in when both apps' signed copies
+    /// are good; otherwise the app is signed again.
+    func open(_ app: LibraryApp) {
+        guard !isBusy, isConnected else { return }
+        let full = (usedAppSlots ?? 0) >= Self.freeAppSlots
+        var makeRoom: LibraryApp?
+        if full {
+            guard let choice = appToMakeRoom(for: app) else {
+                return fail("All \(Self.freeAppSlots) app slots are in use, and none of the apps there can be archived and put back without signing in. Archive or remove an app first.")
+            }
+            guard choice.safe else {
+                pendingSwap = (app, choice.app)
+                return
+            }
+            makeRoom = choice.app
+        }
+        swap(open: app, archiving: makeRoom)
+    }
+
+    /// Goes ahead with the swap the user agreed to.
+    func confirmPendingSwap() {
+        guard let pending = pendingSwap else { return }
+        pendingSwap = nil
+        swap(open: pending.open, archiving: pending.archive)
+    }
+
+    private func swap(open app: LibraryApp, archiving other: LibraryApp?) {
+        guard case .connected(let device) = connection else { return }
+        // A copy that's too old has to be signed again, which the regular restore does.
+        guard canGoBackQuickly(app.bundleID) else {
+            if let other {
+                Task {
+                    archive(other)
+                    while isBusy { try? await Task.sleep(for: .milliseconds(200)) }
+                    if phase == .done { restore(app) }
+                }
+            } else {
+                restore(app)
+            }
+            return
+        }
+
+        phase = .working
+        status = other.map { "Archiving \($0.name) to make room…" } ?? "Restoring \(app.name)…"
+        progress = nil
+        log = []
+        configure()
+        var args = [device.udid, app.bundleID, Library.archive.path, Library.signed.path]
+        if let other { args.append(other.bundleID) }
+        Task {
+            var failure: String?
+            await Engine.run("swap", args: args) { event in
+                Task { @MainActor in
+                    switch event.event {
+                    case "log":
+                        if let message = event.message {
+                            self.log.append(message)
+                            self.status = message
+                        }
+                    case "progress":
+                        self.progress = event.value
+                    case "error":
+                        failure = event.message ?? "Unknown error"
+                    default:
+                        break
+                    }
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(200))
+            if let failure {
+                fail(failure)
+            } else {
+                lastUsed[app.bundleID] = .now
+                phase = .done
+                status = other.map { "\(app.name) is open. \($0.name) is archived to make room." } ?? "\(app.name) is open."
+            }
+            await check(refreshIfDue: false)
+        }
+    }
+
+    /// Starts an app that's on the device, waking it first when it's deactivated.
+    func launch(_ app: LibraryApp) {
+        guard !isBusy, case .connected(let device) = connection else { return }
+        configure()
+        Task {
+            do {
+                _ = try await Engine.runOnce("wake", args: [device.udid, app.bundleID, Library.profiles.path])
+                lastUsed[app.bundleID] = .now
+            } catch {
+                fail(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Opens an app by bundle ID, for the Open App action in Shortcuts. Returns what to say.
+    func openFromShortcut(_ bundleID: String) async -> (succeeded: Bool, message: String) {
+        start()
+        guard !isBusy else { return (false, "Nimbus is busy. Try again in a moment.") }
+        await check(refreshIfDue: false)
+        guard isConnected else { return (false, "Nimbus can't reach this device. Turn on LocalDevVPN first.") }
+        if let app = refreshableApps.first(where: { $0.bundleID == bundleID }) {
+            launch(app)
+            return (true, "Opening \(app.name).")
+        }
+        guard let app = archivedApps.first(where: { $0.bundleID == bundleID }) else {
+            return (false, "That app isn't on this device or in Nimbus's archive anymore.")
+        }
+        open(app)
+        if pendingSwap != nil {
+            pendingSwap = nil
+            return (false, "Making room would lose data of an app that shares it with its extensions. Open Nimbus to choose.")
+        }
+        while isBusy { try? await Task.sleep(for: .milliseconds(250)) }
+        return (phase == .done, status)
+    }
+
     /// Keeps an app's data in Nimbus and takes the app off the device, which frees its slot.
     func archive(_ app: LibraryApp) {
         guard !isBusy, case .connected(let device) = connection else { return }
@@ -825,7 +1008,8 @@ final class PhoneModel {
 
     /// When the first app that Nimbus can refresh expires.
     var nextExpiry: Date? {
-        appsToRefresh.map(expiry(of:)).min()
+        // Archived apps too, so their signed copies stay good.
+        (appsToRefresh + archivedApps).map(expiry(of:)).min()
     }
 
     private var isRefreshDue: Bool {
@@ -868,7 +1052,7 @@ final class PhoneModel {
             return false
         }
         lastAutoRefresh = .now
-        await run(jobs(for: appsToRefresh), automatic: true)
+        await run(allRefreshJobs, automatic: true)
         return phase == .done
     }
 
@@ -886,8 +1070,7 @@ final class PhoneModel {
         guard isConnected else {
             return (false, "Nimbus can't reach this device. Turn on LocalDevVPN first.")
         }
-        let apps = appsToRefresh
-        guard !apps.isEmpty else {
+        guard !allRefreshJobs.isEmpty else {
             return (true, "Nimbus has no apps to refresh.")
         }
         if onlyWhenNeeded {
@@ -900,7 +1083,7 @@ final class PhoneModel {
             }
         }
         lastAutoRefresh = .now
-        await run(jobs(for: apps), automatic: true)
+        await run(allRefreshJobs, automatic: true)
         return (phase == .done, status)
     }
 
@@ -934,6 +1117,7 @@ final class PhoneModel {
             "password": password,
             "apps": jobs.map(\.ipaURL.path),
             "signed_cache": Library.signed.path,
+            "sign_only": jobs.filter(\.signOnly).map(\.ipaURL.path),
         ]
         let succeeded = await Engine.run("install", request: request) { event in
             Task { @MainActor in self.handle(event) }
@@ -1062,7 +1246,7 @@ final class PhoneModel {
         case "installing":
             if let index = event.index, jobs.indices.contains(index) {
                 let job = jobs[index]
-                status = "\(job.existing == nil ? "Installing" : "Refreshing") \(job.name)…"
+                status = "\(job.existing == nil ? "Installing" : job.signOnly ? "Signing" : "Refreshing") \(job.name)…"
                 // Installing Nimbus over itself ends the app before it hears how it went.
                 if let app = job.existing, isNimbusItself(app) {
                     refreshedUntil[app.bundleID] = Date.now.addingTimeInterval(Self.signatureLifetime)
@@ -1099,6 +1283,7 @@ final class PhoneModel {
         if let app = job.existing {
             refreshedUntil[app.bundleID] = expires
             // An archived app that had to be signed again still needs its data back.
+            if !job.signOnly { lastUsed[app.bundleID] = .now }
             if dataToRestore.remove(app.bundleID) != nil, case .connected(let device) = connection {
                 Task { await restoreData(of: app.bundleID, on: device.udid) }
             }
