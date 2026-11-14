@@ -34,6 +34,8 @@ struct InstallRequest {
     anisette_url: Option<String>,
     #[serde(default)]
     increased_memory_limit: bool,
+    /// Where to keep each app as it was signed, to put an archived app back without signing in.
+    signed_cache: Option<PathBuf>,
 }
 
 /// Runs one command and reports a failure as an "error" event. Returns whether it succeeded.
@@ -70,6 +72,11 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
         "diagnose" => device::diagnose().await,
         "deactivate" => crate::profiles::deactivate(arg(0)?, arg(1)?, arg(2)?).await,
         "activate" => crate::profiles::activate(arg(0)?, arg(1)?, arg(2)?).await,
+        "wake" => crate::profiles::wake(arg(0)?, arg(1)?, arg(2)?).await,
+        "archive" => crate::archive::archive(arg(0)?, arg(1)?, arg(2)?).await,
+        "unarchive" => crate::archive::unarchive(arg(0)?, arg(1)?, arg(2)?, arg(3)?).await,
+        "backup" => crate::archive::backup(arg(0)?, arg(1)?, arg(2)?).await,
+        "restore" => crate::archive::restore(arg(0)?, arg(1)?, arg(2)?).await,
         "inspect" => inspect(Path::new(arg(0)?)),
         "jit" => crate::jit::enable(arg(0)?, arg(1)?).await,
         "ddi" => ddi(arg(0)?, args.get(1).map(String::as_str)).await,
@@ -264,6 +271,7 @@ async fn install() -> Result<()> {
                 &team,
                 &path,
                 request.increased_memory_limit,
+                request.signed_cache.as_deref(),
                 index,
                 count,
             )
@@ -309,6 +317,7 @@ async fn install_one<C: MaxCertsCallback>(
     team: &DeveloperTeam,
     ipa: &Path,
     increased_memory_limit: bool,
+    signed_cache: Option<&Path>,
     index: usize,
     count: usize,
 ) -> Result<serde_json::Value> {
@@ -352,6 +361,17 @@ async fn install_one<C: MaxCertsCallback>(
         .await
         .map_err(|e| anyhow!("Installing failed: {e}"));
 
+    // Keep the signed app only when it's really on the device now.
+    if let (Ok(()), Ok(info), Some(cache)) = (&result, &info, signed_cache)
+        && let Some(bundle_id) = info["bundle_id"].as_str()
+    {
+        let kept = crate::archive::signed_app(cache, bundle_id);
+        let _ = std::fs::remove_dir_all(&kept);
+        if let Err(error) = crate::archive::copy_folder(&signed, &kept) {
+            tracing::warn!("Couldn't keep the signed app: {error}");
+            let _ = std::fs::remove_dir_all(&kept);
+        }
+    }
     remove_unpacked(&signed);
     result?;
 

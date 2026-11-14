@@ -11,6 +11,10 @@ enum Library {
 
     /// Profiles of deactivated apps, kept to activate them again.
     static let profilesFolder = folder.appendingPathComponent("Profiles", isDirectory: true)
+    /// The data of archived apps, by bundle ID.
+    static let archiveFolder = folder.appendingPathComponent("Archive", isDirectory: true)
+    /// Each app as it was signed, to put an archived app back without signing in.
+    static let signedFolder = folder.appendingPathComponent("Signed", isDirectory: true)
 
     static let ipaFolder: URL = {
         let url = folder.appendingPathComponent("IPAs", isDirectory: true)

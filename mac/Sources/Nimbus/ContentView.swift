@@ -265,8 +265,11 @@ private struct LibraryAppRow: View {
                     .font(.caption)
             }
             Spacer()
-            // Updating signs the app again, so it also refreshes it.
-            if let update = model.update(for: app) {
+            if model.isArchived(app) {
+                Button("Restore") { model.restore(app) }
+                    .disabled(model.isBusy)
+            } else if let update = model.update(for: app) {
+                // Updating signs the app again, so it also refreshes it.
                 Button("Update") { model.install(update.app, from: update.source) }
                     .disabled(model.isBusy || model.isRateLimited)
                     .help(update.app.version.map { "Version \($0) is available." } ?? "A newer version is available.")
@@ -284,6 +287,13 @@ private struct LibraryAppRow: View {
                 if model.isActive(app.bundleID) && !model.isPhoneApp(app) {
                     Button("Deactivate") { model.deactivate(bundleID: app.bundleID, name: app.name) }
                         .disabled(model.isBusy || model.isInstalled(app) == false)
+                }
+                // Archiving Nimbus on the device would take away what puts apps back there.
+                if !model.isPhoneApp(app) {
+                    Button("Archive…") {
+                        if confirmArchiving(of: app.name) { model.archive(app) }
+                    }
+                        .disabled(model.isBusy || model.isInstalled(app) != true)
                 }
                 Button("Remove from Device…") {
                     if confirmRemoval(of: app.name) { model.uninstall(bundleID: app.bundleID, name: app.name) }
@@ -308,10 +318,12 @@ private struct LibraryAppRow: View {
     }
 
     @ViewBuilder private var expiry: some View {
-        if model.isInstalled(app) == false {
+        if model.isArchived(app) {
+            Text("Archived. Its data is kept on this Mac, and it doesn't take up a slot.").foregroundStyle(.secondary)
+        } else if model.isInstalled(app) == false {
             Text("Not on this device anymore").foregroundStyle(.secondary)
         } else if !model.isActive(app.bundleID) {
-            Text("Deactivated. Its data is kept, and it doesn't take up a slot.").foregroundStyle(.secondary)
+            Text("Deactivated. It won't open until you activate it; its data is kept.").foregroundStyle(.secondary)
         } else {
             let expires = model.expiry(of: app)
             if expires < .now {
@@ -335,7 +347,7 @@ private struct OtherAppRow: View {
 
     @ViewBuilder private var detail: some View {
         if app.active == false {
-            Text("Deactivated. Its data is kept, and it doesn't take up a slot.").foregroundStyle(.secondary)
+            Text("Deactivated. It won't open until you activate it; its data is kept.").foregroundStyle(.secondary)
         } else if let expires = managedUntil {
             // The device didn't say when it expires.
             if expires == .distantPast {
@@ -386,6 +398,16 @@ private struct OtherAppRow: View {
             .fixedSize()
         }
     }
+}
+
+@MainActor
+private func confirmArchiving(of name: String) -> Bool {
+    let alert = NSAlert()
+    alert.messageText = "Archive \(name)?"
+    alert.informativeText = "Nimbus saves the app's data on this Mac and removes the app from your device, which frees a slot. Restore puts the app and its data back.\n\nData an app shares with its widgets or extensions isn't saved, and neither is anything it keeps in iCloud or the Keychain."
+    alert.addButton(withTitle: "Archive")
+    alert.addButton(withTitle: "Cancel")
+    return alert.runModal() == .alertFirstButtonReturn
 }
 
 @MainActor

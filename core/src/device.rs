@@ -10,7 +10,9 @@ use crate::io;
 use anyhow::{Result, anyhow};
 use idevice::{
     IdeviceError, IdeviceService, RsdService,
+    core_device::AppServiceClient,
     core_device_proxy::CoreDeviceProxy,
+    house_arrest::HouseArrestClient,
     installation_proxy::InstallationProxyClient,
     lockdown::LockdownClient,
     misagent::MisagentClient,
@@ -37,6 +39,8 @@ pub const HOST_NAME: &str = "Nimbus";
 pub const DEFAULT_PAIRING_PORT: u16 = 49152;
 /// Without the VPN, a connection to the device's own address can hang instead of failing.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+/// A locked device doesn't start apps; it just doesn't answer.
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// A connection to a device.
 pub enum Link {
@@ -89,6 +93,16 @@ impl Link {
         }
     }
 
+    /// The service that opens an app's folders to a paired computer.
+    pub async fn house_arrest(&mut self) -> Result<HouseArrestClient, IdeviceError> {
+        match self {
+            Link::Usb(provider) => HouseArrestClient::connect(provider).await,
+            Link::Tunnel(tunnel) => {
+                HouseArrestClient::connect_rsd(&mut tunnel.adapter, &mut tunnel.services).await
+            }
+        }
+    }
+
     /// The service that holds the device's provisioning profiles.
     pub async fn misagent(&mut self) -> Result<MisagentClient, IdeviceError> {
         match self {
@@ -112,6 +126,34 @@ impl Link {
                 install_app_rsd(&mut tunnel.adapter, &mut tunnel.services, app, progress).await
             }
         }
+    }
+}
+
+impl Link {
+    /// The tunnel to the device, which starting apps and debugging need. Over usbmuxd that's
+    /// a second connection.
+    pub async fn into_tunnel(self, udid: &str) -> Result<Tunnel> {
+        match self {
+            Link::Tunnel(tunnel) => Ok(*tunnel),
+            Link::Usb(_) => tunnel_for(Some(udid)).await,
+        }
+    }
+}
+
+impl Tunnel {
+    /// Starts an app and returns its process ID. With `fresh`, a running copy is quit first.
+    pub async fn launch(&mut self, bundle_id: &str, fresh: bool) -> Result<u32> {
+        let mut apps = AppServiceClient::connect_rsd(&mut self.adapter, &mut self.services)
+            .await
+            .map_err(|e| anyhow!("Can't reach the device's app service: {e}"))?;
+        let launched = tokio::time::timeout(
+            LAUNCH_TIMEOUT,
+            apps.launch_application(bundle_id, &[], fresh, false, None, None, None),
+        )
+        .await
+        .map_err(|_| anyhow!("The app didn't start. Unlock the device and try again."))?
+        .map_err(|e| anyhow!("Couldn't start the app: {e}"))?;
+        Ok(launched.pid)
     }
 }
 

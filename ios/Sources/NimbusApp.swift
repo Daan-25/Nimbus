@@ -24,6 +24,8 @@ struct ContentView: View {
     @State private var choosingIPA = false
     /// The app the user is about to remove from the device.
     @State private var removing: DeviceApp?
+    /// The app the user is about to archive.
+    @State private var archiving: LibraryApp?
     @State private var showLog = false
     @State private var tab = Tab.apps
 
@@ -74,6 +76,18 @@ struct ContentView: View {
                 tab = .apps
                 model.refreshAll()
             }
+        }
+        .confirmationDialog(
+            "Archive \(archiving?.name ?? "this app")?",
+            isPresented: Binding(get: { archiving != nil }, set: { if !$0 { archiving = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Archive") {
+                if let app = archiving { model.archive(app) }
+                archiving = nil
+            }
+        } message: {
+            Text("Nimbus saves the app's data and removes the app, which frees a slot. Restore puts the app and its data back. Data an app shares with its widgets or extensions isn't saved, and neither is anything it keeps in iCloud or the Keychain.")
         }
         .confirmationDialog(
             "Remove \(removing?.name ?? "this app") from this device?",
@@ -194,7 +208,7 @@ struct ContentView: View {
 
     private var appsSection: some View {
         Section {
-            if model.refreshableApps.isEmpty && model.otherApps.isEmpty {
+            if model.refreshableApps.isEmpty && model.otherApps.isEmpty && model.archivedApps.isEmpty {
                 Text(model.deviceApps == nil ? "Loading…" : "No sideloaded apps on this device.")
                     .foregroundStyle(.secondary)
             }
@@ -230,6 +244,9 @@ struct ContentView: View {
                     // Removing Nimbus from inside Nimbus would cut off the branch it sits on.
                     if app.bundleID != Bundle.main.bundleIdentifier {
                         removeButton(DeviceApp(bundleId: app.bundleID, name: app.name, version: app.version))
+                        Button("Archive", systemImage: "archivebox") { archiving = app }
+                            .tint(.blue)
+                            .disabled(model.isBusy || !model.isConnected)
                         activationButton(bundleID: app.bundleID, name: app.name)
                     }
                 }
@@ -239,6 +256,22 @@ struct ContentView: View {
                     }
                 }
             }
+            ForEach(model.archivedApps) { app in
+                HStack(spacing: 12) {
+                    AppIcon(url: app.iconURL)
+                        .opacity(0.5)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(app.name)
+                        Text("Archived. Its data is kept, and it doesn't take up a slot.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Restore") { model.restore(app) }
+                        .buttonStyle(.bordered)
+                        .disabled(model.isBusy || !model.isConnected)
+                }
+            }
             ForEach(model.otherApps) { app in
                 HStack(spacing: 12) {
                     AppIcon(url: nil)
@@ -246,7 +279,7 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(app.name)
                         Text(app.active == false
-                             ? "Deactivated. Its data is kept, and it doesn't take up a slot."
+                             ? "Deactivated. It won't open until you activate it; its data is kept."
                              : "Nimbus has no .ipa file of this app. Add its .ipa to refresh it here.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -276,7 +309,7 @@ struct ContentView: View {
                 }
             }
         } footer: {
-            Text("Find apps under Browse, add an .ipa file from this device, or open one with Nimbus from Files or Safari. Swipe an app left to remove or deactivate it, or right to open it with JIT. A deactivated app keeps its data and frees its slot. Keep Nimbus open while it works; refreshing Nimbus itself closes it when it's done.")
+            Text("Find apps under Browse, add an .ipa file from this device, or open one with Nimbus from Files or Safari. Swipe an app left to remove, archive or deactivate it, or right to open it with JIT. Archiving keeps an app's data and frees its slot. Keep Nimbus open while it works; refreshing Nimbus itself closes it when it's done.")
         }
     }
 
@@ -297,7 +330,7 @@ struct ContentView: View {
             .disabled(model.isBusy || !model.isConnected)
     }
 
-    /// Deactivates an app to free its slot while keeping its data, or activates it again.
+    /// Deactivates an app, which keeps it from opening while its data stays, or activates it again.
     @ViewBuilder private func activationButton(bundleID: String, name: String) -> some View {
         if model.isActive(bundleID) {
             Button("Deactivate", systemImage: "pause.circle") { model.deactivate(bundleID: bundleID, name: name) }
@@ -331,7 +364,7 @@ struct ContentView: View {
     @ViewBuilder private func expiry(of app: LibraryApp) -> some View {
         let expires = model.expiry(of: app)
         if !model.isActive(app.bundleID) {
-            Text("Deactivated. Its data is kept, and it doesn't take up a slot.").foregroundStyle(.secondary)
+            Text("Deactivated. It won't open until you activate it; its data is kept.").foregroundStyle(.secondary)
         } else if expires < .now {
             Text("Expired. Refresh to use it again.").foregroundStyle(.red)
         } else {

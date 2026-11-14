@@ -53,7 +53,7 @@ struct DeviceApp: Decodable, Hashable, Identifiable, Sendable {
     let name: String
     let version: String?
     /// False for a deactivated app: still on the device with its data, but without the profile
-    /// it needs to open, so it doesn't count towards the limit. Nil when that isn't known.
+    /// it needs to open. It still counts towards the limit. Nil when that isn't known.
     var active: Bool? = nil
     var id: String { bundleId }
 }

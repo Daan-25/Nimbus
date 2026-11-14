@@ -9,9 +9,7 @@
 
 use crate::{device, io};
 use anyhow::{Result, anyhow, bail};
-use idevice::{
-    ReadWrite, RsdService, core_device::AppServiceClient, debug_proxy::DebugProxyClient,
-};
+use idevice::{ReadWrite, RsdService, debug_proxy::DebugProxyClient};
 use serde_json::json;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -51,17 +49,8 @@ pub async fn enable(udid: &str, bundle_id: &str) -> Result<()> {
     }
 
     io::log("Starting the app…");
-    let mut apps = AppServiceClient::connect_rsd(&mut tunnel.adapter, &mut tunnel.services)
-        .await
-        .map_err(|e| anyhow!("Can't reach the device's app service: {e}"))?;
     // A fresh start: apps set up their JIT memory while they launch.
-    let launched = tokio::time::timeout(
-        REPLY_TIMEOUT,
-        apps.launch_application(bundle_id, &[], true, false, None, None, None),
-    )
-    .await
-    .map_err(|_| anyhow!("The app didn't start. Unlock the device and try again."))?
-    .map_err(|e| anyhow!("Couldn't start the app: {e}"))?;
+    let pid = tunnel.launch(bundle_id, true).await?;
 
     io::log("Attaching the debugger…");
     let client = tokio::time::timeout(
@@ -72,7 +61,7 @@ pub async fn enable(udid: &str, bundle_id: &str) -> Result<()> {
     .map_err(|_| anyhow!("The device's debugger didn't answer."))?
     .map_err(|e| anyhow!("Can't reach the device's debugger: {e}"))?;
     let mut debugger = Debugger { client };
-    let regions = debugger.run(launched.pid).await?;
+    let regions = debugger.run(pid).await?;
 
     match regions {
         Some(regions) => io::log(format!(
@@ -84,7 +73,7 @@ pub async fn enable(udid: &str, bundle_id: &str) -> Result<()> {
              on newer ones the app has to ask for its memory, and this one didn't.",
         ),
     }
-    io::emit(json!({ "event": "jit", "pid": launched.pid, "regions": regions }));
+    io::emit(json!({ "event": "jit", "pid": pid, "regions": regions }));
     Ok(())
 }
 

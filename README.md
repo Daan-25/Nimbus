@@ -16,8 +16,8 @@ It's an alternative to AltStore and SideStore, built to remove the parts that ge
 - **Refreshes in the background.** Nimbus lives in the menu bar and refreshes your apps two days before they
   expire, over a cable or Wi-Fi. It refreshes all apps with one sign-in, and never more than once every six hours.
 - **Shows your limits.** See how many of your 3 app slots are used and how many app IDs you have left this week.
-  Remove an app to free a slot, or deactivate it: it keeps its data and gives up its slot until you
-  activate it again.
+  Remove an app to free a slot, or archive it: Nimbus keeps its data, takes the app off your device, and
+  puts both back when you want it again.
 - **Works with AltStore sources.** Add a source, read what an app is and see its screenshots, then install and
   update it from Nimbus. Downloads are
   checked against the source's checksum when it has one.
@@ -110,6 +110,13 @@ missing, on iOS 26.4 and later: Apple signs the image for the device, and the de
 image comes with Xcode; the Mac app copies it to the iPhone app along with your apps, so the iPhone can
 mount it without the Mac. `nimbus-helper ddi UDID` shows whether it's mounted.
 
+**Archiving.** A free Apple ID allows three sideloaded apps on a device, and the device counts every app
+that's installed. Archiving an app copies its data off the device and removes the app; restoring installs
+it again and copies the data back. Nimbus keeps each app as it was signed, so restoring takes no sign-in
+while that signature is good, which is seven days. It reaches an app's own Documents and Library folders.
+Data an app shares with its extensions through an app group isn't saved, and neither is anything in iCloud
+or the Keychain.
+
 Apps the iPhone installs itself, from an `.ipa` you pick or open with Nimbus, are kept in a list of their
 own, apart from the one the Mac copies over. The Mac shows them as looked after by Nimbus on the device.
 
@@ -143,9 +150,11 @@ downloading those needs a Patreon sign-in.
   - [x] Browse and install apps from sources on the iPhone
   - [x] Enable JIT, also on iOS 26 and later for apps that follow the StikJIT protocol
   - [x] Mount the developer disk image from Nimbus, so JIT also works after a restart (iOS 26.4 and later)
-- [x] Deactivate an app and activate it again, keeping its data
-- [ ] Confirm that a deactivated app frees its slot for a fourth app
+- [x] Deactivate an app and activate it again, keeping its data. This doesn't free a slot: on iOS 27 a
+  deactivated app still counts towards the three.
 - [x] A Refresh All Apps action for Shortcuts
+- [x] Archive apps to have more than three, and restore them with their data
+- [ ] Let Nimbus pick which app makes room, and open the restored app ("awake on tap")
 
 ## Credits
 

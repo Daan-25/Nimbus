@@ -7,6 +7,11 @@
 //!   nimbus-helper uninstall UDID BUNDLE_ID
 //!   nimbus-helper deactivate UDID BUNDLE_ID FOLDER   takes an app's profile off the device, keeping app and data
 //!   nimbus-helper activate UDID BUNDLE_ID FOLDER     puts that profile back
+//!   nimbus-helper wake UDID BUNDLE_ID FOLDER          opens an app, activating it first when needed
+//!   nimbus-helper archive UDID BUNDLE_ID FOLDER      keeps an app's data in FOLDER and removes the app
+//!   nimbus-helper unarchive UDID BUNDLE_ID FOLDER CACHE   puts the app and its data back, from the signed copy in CACHE
+//!   nimbus-helper backup UDID BUNDLE_ID FOLDER       copies an app's data off the device
+//!   nimbus-helper restore UDID BUNDLE_ID FOLDER      copies it back into the app
 //!   nimbus-helper install       reads an install request from stdin, then answers prompts
 //!   nimbus-helper setup-phone UDID BUNDLE_ID [APPLE_ID]   gives Nimbus on the device its pairing file
 //!   nimbus-helper phone-status UDID BUNDLE_ID  prints what Nimbus on the device refreshed itself

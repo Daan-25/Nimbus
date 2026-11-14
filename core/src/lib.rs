@@ -10,6 +10,7 @@
 //! Replies: {"code": "123456"} | {"action": "resend" | "devices" | "sms" | "abort", "number_id": 1}
 //!          {"team_id": "..."} | {"serials": ["..."]}
 
+mod archive;
 mod client_info;
 pub mod config;
 mod ddi;

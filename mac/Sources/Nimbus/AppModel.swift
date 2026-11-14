@@ -124,6 +124,8 @@ final class AppModel {
     /// Installed bundle ID of Nimbus for iPhone, when it still has to be set up after this install.
     private var phoneAppToSetUp: String?
     private var setupUDID: String?
+    /// Archived apps that are being installed afresh and still need their data back.
+    private var dataToRestore: Set<String> = []
     private var lastPhoneStatus = Date.distantPast
     /// When apps expire that Nimbus on the selected device installed and looks after itself, by bundle ID.
     var phoneManagedApps: [String: Date] = [:]
@@ -191,8 +193,8 @@ final class AppModel {
     /// which are the ones limited to 3 apps; Apple reports an app ID limit only for those.
     var usedAppSlots: Int? {
         guard let teamID, appIDsMax != nil, let deviceApps else { return nil }
-        // Deactivated apps don't count.
-        return deviceApps.filter { $0.bundleId.contains(teamID) && $0.active != false }.count
+        // Deactivated apps count too: the device counts what's installed.
+        return deviceApps.filter { $0.bundleId.contains(teamID) }.count
     }
 
     /// False for an app that's deactivated: on the device with its data, but not usable.
@@ -438,14 +440,82 @@ final class AppModel {
     }
 
     func refreshAll() {
-        // Refreshing a deactivated app would activate it and take up a slot.
+        // Refreshing a deactivated app would activate it, which is for the user to decide.
         refresh(libraryAppsOnDevice.filter { isInstalled($0) != false && isActive($0.bundleID) })
     }
 
     func forget(_ app: LibraryApp) {
         library.removeAll { $0.id == app.id }
+        // Its saved data and signed copy go with it, unless another device still has the app.
+        if !library.contains(where: { $0.bundleID == app.bundleID }) {
+            try? FileManager.default.removeItem(at: Library.archiveFolder.appendingPathComponent(app.bundleID))
+            try? FileManager.default.removeItem(at: Library.signedFolder.appendingPathComponent("\(app.bundleID).app"))
+        }
         if !library.contains(where: { $0.ipaFile == app.ipaFile }) {
             Library.deleteIPA(app.ipaFile)
+        }
+    }
+
+    // MARK: Archiving
+
+    /// An archived app is off the device, with its data kept here to put back.
+    func isArchived(_ app: LibraryApp) -> Bool {
+        isInstalled(app) == false
+            && FileManager.default.fileExists(atPath: Library.archiveFolder.appendingPathComponent(app.bundleID).path)
+    }
+
+    /// Keeps an app's data on this Mac and takes the app off the device, which frees its slot.
+    func archive(_ app: LibraryApp) {
+        guard !isBusy, let udid = selectedUDID else { return }
+        phase = .working
+        status = "Archiving \(app.name)…"
+        progress = nil
+        Task {
+            do {
+                _ = try await Helper.runOnce(["archive", udid, app.bundleID, Library.archiveFolder.path])
+                phase = .done
+                status = "\(app.name) is archived. Its data is kept on this Mac, and its slot is free."
+            } catch {
+                fail(error.localizedDescription)
+            }
+            await refreshDeviceApps()
+        }
+    }
+
+    /// Puts an archived app back with its data. From the copy that was kept when it was signed
+    /// that takes no sign-in; when that copy is too old, the app is signed again first.
+    func restore(_ app: LibraryApp) {
+        guard !isBusy, let udid = selectedUDID else { return }
+        if let used = usedAppSlots, used >= Self.freeAppSlots {
+            return fail("All \(Self.freeAppSlots) app slots on \(selectedDevice?.name ?? "your device") are in use. Archive or remove an app first.")
+        }
+        phase = .working
+        status = "Restoring \(app.name)…"
+        progress = nil
+        Task {
+            do {
+                _ = try await Helper.runOnce(["unarchive", udid, app.bundleID, Library.archiveFolder.path, Library.signedFolder.path])
+                phase = .done
+                status = "\(app.name) is back, with its data."
+                await refreshDeviceApps()
+            } catch {
+                // No signed copy that's still good: sign it again, then put the data back.
+                phase = .idle
+                dataToRestore.insert(app.bundleID)
+                refresh([app])
+            }
+        }
+    }
+
+    /// After an archived app was installed afresh, puts its data back.
+    private func restoreData(of bundleID: String, on udid: String) async {
+        let folder = Library.archiveFolder.appendingPathComponent(bundleID)
+        do {
+            _ = try await Helper.runOnce(["restore", udid, bundleID, folder.path])
+            try? FileManager.default.removeItem(at: folder)
+        } catch {
+            log.append("Couldn't put the data of \(bundleID) back: \(error.localizedDescription)")
+            status += " Its data couldn't be put back; it's still on this Mac. See the log."
         }
     }
 
@@ -469,8 +539,8 @@ final class AppModel {
         }
     }
 
-    /// Takes an app's profile off the device. The app and its data stay, but it won't open and
-    /// no longer counts towards the three apps a free Apple ID allows.
+    /// Takes an app's profile off the device. The app and its data stay, but it won't open.
+    /// It still counts towards the three apps a free Apple ID allows.
     func deactivate(bundleID: String, name: String) {
         guard !isBusy, let udid = selectedUDID else { return }
         phase = .working
@@ -480,7 +550,7 @@ final class AppModel {
             do {
                 _ = try await Helper.runOnce(["deactivate", udid, bundleID, Library.profilesFolder.path])
                 phase = .done
-                status = "\(name) is deactivated. Its data is kept, and a slot is free."
+                status = "\(name) is deactivated. It won't open until you activate it; its data is kept."
             } catch {
                 fail(error.localizedDescription)
             }
@@ -492,9 +562,6 @@ final class AppModel {
     /// gives it a new one, which needs the app's .ipa.
     func activate(bundleID: String, name: String) {
         guard !isBusy, let udid = selectedUDID else { return }
-        if let used = usedAppSlots, used >= Self.freeAppSlots {
-            return fail("All \(Self.freeAppSlots) app slots on \(selectedDevice?.name ?? "your device") are in use. Deactivate or remove an app first.")
-        }
         phase = .working
         status = "Activating \(name)…"
         progress = nil
@@ -627,6 +694,7 @@ final class AppModel {
                 "password": password,
                 "apps": jobs.map { Library.ipaFolder.appendingPathComponent($0.ipaFile).path },
                 "udid": device.udid,
+                "signed_cache": Library.signedFolder.path,
             ])
         } catch {
             fail(error.localizedDescription)
@@ -864,6 +932,9 @@ final class AppModel {
 
     private func installed(_ job: Job, _ event: HelperEvent) {
         guard let bundleID = event.bundleId, let udid = runningUDID else { return }
+        if dataToRestore.remove(bundleID) != nil {
+            Task { await restoreData(of: bundleID, on: udid) }
+        }
         // Also after a refresh, so one click brings the app, its pairing file and its signing key up to date.
         if job.isPhoneApp || job.existing.map(isPhoneApp) == true { phoneAppToSetUp = bundleID }
         let expires = event.expires.flatMap { try? Date($0, strategy: .iso8601) }

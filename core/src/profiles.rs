@@ -1,8 +1,11 @@
 //! Provisioning profiles: what lets a sideloaded app run on a device.
 //!
-//! A free Apple ID allows three sideloaded apps on a device at once, and the device counts the
-//! ones that have a profile. Taking an app's profile away leaves the app and its data in
-//! place, but it won't open and no longer counts. Putting the profile back makes it work again.
+//! Taking an app's profile away leaves the app and its data in place, but it won't open.
+//! Putting the profile back makes it work again, without signing in to Apple.
+//!
+//! This doesn't get around the three sideloaded apps a free Apple ID allows: the device counts
+//! the apps that are installed, with or without a profile. Tried on iOS 27, where installing a
+//! fourth app failed while one of the three had no profile.
 
 use crate::device::{self, Link};
 use crate::io;
@@ -55,6 +58,13 @@ impl Profile {
     }
 }
 
+/// Whether a profile, as a file, can still be used. A profile that can't be read can't.
+pub fn is_valid(data: &[u8]) -> bool {
+    Profile::parse(data.to_vec())
+        .and_then(|profile| profile.expires)
+        .is_some_and(|expires| expires > SystemTime::now())
+}
+
 pub async fn installed(link: &mut Link) -> Result<Vec<Profile>> {
     let mut client = link
         .misagent()
@@ -74,7 +84,13 @@ fn saved_profile(folder: &str, bundle_id: &str) -> PathBuf {
 /// Takes an app's profile off the device and keeps it in `folder`, to put back later.
 pub async fn deactivate(udid: &str, bundle_id: &str, folder: &str) -> Result<()> {
     let mut link = device::link_for(Some(udid)).await?;
-    let profiles: Vec<Profile> = installed(&mut link)
+    deactivate_on(&mut link, bundle_id, folder).await?;
+    io::emit(json!({ "event": "deactivated", "bundle_id": bundle_id }));
+    Ok(())
+}
+
+async fn deactivate_on(link: &mut Link, bundle_id: &str, folder: &str) -> Result<()> {
+    let profiles: Vec<Profile> = installed(link)
         .await?
         .into_iter()
         .filter(|profile| profile.belongs_to(bundle_id))
@@ -97,13 +113,19 @@ pub async fn deactivate(udid: &str, bundle_id: &str, folder: &str) -> Result<()>
             .await
             .map_err(|e| anyhow!("Couldn't remove the app's profile: {e}"))?;
     }
-    io::emit(json!({ "event": "deactivated", "bundle_id": bundle_id }));
     Ok(())
 }
 
 /// Puts back the profile that `deactivate` kept. Fails when there is none or it has expired;
 /// refreshing the app then gives it a new one.
 pub async fn activate(udid: &str, bundle_id: &str, folder: &str) -> Result<()> {
+    let mut link = device::link_for(Some(udid)).await?;
+    activate_on(&mut link, bundle_id, folder).await?;
+    io::emit(json!({ "event": "activated", "bundle_id": bundle_id }));
+    Ok(())
+}
+
+async fn activate_on(link: &mut Link, bundle_id: &str, folder: &str) -> Result<()> {
     let path = saved_profile(folder, bundle_id);
     let data = std::fs::read(&path).map_err(|_| {
         anyhow!("Nimbus has no profile for this app anymore. Refresh the app to activate it.")
@@ -117,7 +139,6 @@ pub async fn activate(udid: &str, bundle_id: &str, folder: &str) -> Result<()> {
         bail!("The app's profile has expired. Refresh the app to activate it.");
     }
 
-    let mut link = device::link_for(Some(udid)).await?;
     let mut client = link
         .misagent()
         .await
@@ -126,7 +147,22 @@ pub async fn activate(udid: &str, bundle_id: &str, folder: &str) -> Result<()> {
         anyhow!("Your device didn't take the profile back. Is an app slot free? ({e})")
     })?;
     let _ = std::fs::remove_file(path);
-    io::emit(json!({ "event": "activated", "bundle_id": bundle_id }));
+    Ok(())
+}
+
+/// Opens an app, activating it first when it's deactivated.
+pub async fn wake(udid: &str, bundle_id: &str, folder: &str) -> Result<()> {
+    let mut link = device::link_for(Some(udid)).await?;
+    let awake = installed(&mut link)
+        .await?
+        .iter()
+        .any(|profile| profile.covers(bundle_id));
+    if !awake {
+        activate_on(&mut link, bundle_id, folder).await?;
+    }
+    let mut tunnel = link.into_tunnel(udid).await?;
+    tunnel.launch(bundle_id, false).await?;
+    io::emit(json!({ "event": "woken", "bundle_id": bundle_id }));
     Ok(())
 }
 

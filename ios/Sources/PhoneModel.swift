@@ -24,6 +24,10 @@ enum Library {
     static let storage = support.appendingPathComponent("Storage", isDirectory: true)
     /// Profiles of deactivated apps, kept to activate them again.
     static let profiles = support.appendingPathComponent("Profiles", isDirectory: true)
+    /// The data of archived apps, by bundle ID.
+    static let archive = support.appendingPathComponent("Archive", isDirectory: true)
+    /// Each app as it was signed, to put an archived app back without signing in.
+    static let signed = support.appendingPathComponent("Signed", isDirectory: true)
 
     static func load() -> [LibraryApp] {
         guard let data = try? Data(contentsOf: file) else { return [] }
@@ -279,8 +283,8 @@ final class PhoneModel {
     /// Apps on this device signed by this Apple ID; nil when that isn't known yet.
     var usedAppSlots: Int? {
         guard let teamID, let deviceApps else { return nil }
-        // Deactivated apps don't count.
-        return deviceApps.filter { $0.bundleId.contains(teamID) && $0.active != false }.count
+        // Deactivated apps count too: the device counts what's installed.
+        return deviceApps.filter { $0.bundleId.contains(teamID) }.count
     }
 
     /// False for an app that's deactivated: on the device with its data, but not usable.
@@ -289,7 +293,7 @@ final class PhoneModel {
     }
 
     /// The apps a refresh of everything covers. Refreshing a deactivated app would activate
-    /// it and take up a slot.
+    /// it, which is for the user to decide.
     private var appsToRefresh: [LibraryApp] {
         refreshableApps.filter { isActive($0.bundleID) }
     }
@@ -299,6 +303,16 @@ final class PhoneModel {
         knownApps
             .filter { FileManager.default.fileExists(atPath: $0.ipaURL.path) }
             .filter { app in deviceApps?.contains { $0.bundleId == app.bundleID } ?? true }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// Apps that are off the device with their data kept here, ready to put back.
+    var archivedApps: [LibraryApp] {
+        guard let deviceApps else { return [] }
+        return knownApps
+            .filter { FileManager.default.fileExists(atPath: $0.ipaURL.path) }
+            .filter { app in !deviceApps.contains { $0.bundleId == app.bundleID } }
+            .filter { FileManager.default.fileExists(atPath: Library.archive.appendingPathComponent($0.bundleID).path) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
@@ -655,10 +669,75 @@ final class PhoneModel {
         }
     }
 
+    // MARK: Archiving
+
+    /// Archived apps that are being installed afresh and still need their data back.
+    private var dataToRestore: Set<String> = []
+
+    /// Keeps an app's data in Nimbus and takes the app off the device, which frees its slot.
+    func archive(_ app: LibraryApp) {
+        guard !isBusy, case .connected(let device) = connection else { return }
+        phase = .working
+        status = "Archiving \(app.name)…"
+        progress = nil
+        configure()
+        Task {
+            do {
+                _ = try await Engine.runOnce("archive", args: [device.udid, app.bundleID, Library.archive.path])
+                phase = .done
+                status = "\(app.name) is archived. Its data is kept in Nimbus, and its slot is free."
+            } catch {
+                fail(error.localizedDescription)
+            }
+            await check(refreshIfDue: false)
+        }
+    }
+
+    /// Puts an archived app back with its data. From the copy that was kept when it was signed
+    /// that takes no sign-in; when that copy is too old, the app is signed again first.
+    func restore(_ app: LibraryApp) {
+        guard !isBusy, case .connected(let device) = connection else { return }
+        if let used = usedAppSlots, used >= Self.freeAppSlots {
+            return fail("All \(Self.freeAppSlots) app slots on this device are in use. Archive or remove an app first.")
+        }
+        phase = .working
+        status = "Restoring \(app.name)…"
+        progress = nil
+        configure()
+        Task {
+            do {
+                _ = try await Engine.runOnce(
+                    "unarchive",
+                    args: [device.udid, app.bundleID, Library.archive.path, Library.signed.path]
+                )
+                phase = .done
+                status = "\(app.name) is back, with its data."
+                await check(refreshIfDue: false)
+            } catch {
+                // No signed copy that's still good: sign it again, then put the data back.
+                phase = .idle
+                dataToRestore.insert(app.bundleID)
+                refresh([app])
+            }
+        }
+    }
+
+    /// After an archived app was installed afresh, puts its data back.
+    private func restoreData(of bundleID: String, on udid: String) async {
+        let folder = Library.archive.appendingPathComponent(bundleID)
+        // The engine runs one thing at a time, so this waits for the install to finish.
+        do {
+            _ = try await Engine.runOnce("restore", args: [udid, bundleID, folder.path])
+            try? FileManager.default.removeItem(at: folder)
+        } catch {
+            log.append("Couldn't put the data of \(bundleID) back: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: Deactivating
 
-    /// Takes an app's profile off the device. The app and its data stay, but it won't open and
-    /// no longer counts towards the three apps a free Apple ID allows.
+    /// Takes an app's profile off the device. The app and its data stay, but it won't open.
+    /// It still counts towards the three apps a free Apple ID allows.
     func deactivate(bundleID: String, name: String) {
         guard !isBusy, case .connected(let device) = connection else { return }
         phase = .working
@@ -669,7 +748,7 @@ final class PhoneModel {
             do {
                 _ = try await Engine.runOnce("deactivate", args: [device.udid, bundleID, Library.profiles.path])
                 phase = .done
-                status = "\(name) is deactivated. Its data is kept, and a slot is free."
+                status = "\(name) is deactivated. It won't open until you activate it; its data is kept."
             } catch {
                 fail(error.localizedDescription)
             }
@@ -681,9 +760,6 @@ final class PhoneModel {
     /// gives it a new one, which needs the app's .ipa.
     func activate(bundleID: String, name: String) {
         guard !isBusy, case .connected(let device) = connection else { return }
-        if let used = usedAppSlots, used >= Self.freeAppSlots {
-            return fail("All \(Self.freeAppSlots) app slots on this device are in use. Deactivate or remove an app first.")
-        }
         phase = .working
         status = "Activating \(name)…"
         progress = nil
@@ -857,6 +933,7 @@ final class PhoneModel {
             "apple_id": normalizedAppleID,
             "password": password,
             "apps": jobs.map(\.ipaURL.path),
+            "signed_cache": Library.signed.path,
         ]
         let succeeded = await Engine.run("install", request: request) { event in
             Task { @MainActor in self.handle(event) }
@@ -1021,6 +1098,10 @@ final class PhoneModel {
             ?? Date.now.addingTimeInterval(Self.signatureLifetime)
         if let app = job.existing {
             refreshedUntil[app.bundleID] = expires
+            // An archived app that had to be signed again still needs its data back.
+            if dataToRestore.remove(app.bundleID) != nil, case .connected(let device) = connection {
+                Task { await restoreData(of: app.bundleID, on: device.udid) }
+            }
             return
         }
         // A new app from an .ipa file on this device.
