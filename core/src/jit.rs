@@ -16,6 +16,13 @@ use std::time::Duration;
 
 /// The breakpoint apps use to talk to the debugger.
 const REQUEST_BREAKPOINT: u32 = 0xf00d;
+/// The breakpoint apps use to ask whether a debugger that speaks the protocol is attached.
+/// The answer is this value in x0.
+const PROBE_BREAKPOINT: u32 = 0x69;
+const PROBE_ANSWER: u64 = 0xE000_0069;
+/// The breakpoint apps use to hand the debugger a script of their own. Nimbus doesn't run
+/// scripts, so it steps over it.
+const SCRIPT_BREAKPOINT: u32 = 0x68;
 const REQUEST_DETACH: u64 = 0;
 const REQUEST_PREPARE_REGION: u64 = 1;
 /// Register numbers in debugserver's replies.
@@ -124,6 +131,7 @@ impl Debugger {
                 return Ok(asked.then_some(regions));
             };
             let reply = reply?;
+            tracing::debug!("debugserver: {}", reply.get(..120).unwrap_or(&reply));
             if reply.starts_with('W') || reply.starts_with('X') {
                 bail!("The app quit while the debugger was attached.");
             }
@@ -135,17 +143,36 @@ impl Debugger {
             };
 
             let instruction = self.read_u32(pc).await?;
-            let is_request = instruction & 0xFFE0_001F == 0xD420_0000
-                && (instruction >> 5) & 0xFFFF == REQUEST_BREAKPOINT;
-            if !is_request {
+            tracing::debug!(
+                "stop at {pc:#x}: instruction {instruction:#010x}, x16 {:#x}, x0 {:#x}, x1 {:#x}",
+                stop.registers.get(&X16).copied().unwrap_or(0),
+                stop.registers.get(&X0).copied().unwrap_or(0),
+                stop.registers.get(&X1).copied().unwrap_or(0)
+            );
+            let breakpoint =
+                (instruction & 0xFFE0_001F == 0xD420_0000).then_some((instruction >> 5) & 0xFFFF);
+            let Some(immediate @ (REQUEST_BREAKPOINT | PROBE_BREAKPOINT | SCRIPT_BREAKPOINT)) =
+                breakpoint
+            else {
                 // Not for the debugger: hand the signal to the app, as if nobody was attached.
                 command = format!("vCont;S{}:{}", stop.signal, stop.thread);
                 continue;
-            }
+            };
             asked = true;
 
             // Step over the breakpoint, or the app would hit it again.
             self.set_register(PC, pc + 4, &stop.thread).await?;
+            match immediate {
+                PROBE_BREAKPOINT => {
+                    self.set_register(X0, PROBE_ANSWER, &stop.thread).await?;
+                    continue;
+                }
+                SCRIPT_BREAKPOINT => {
+                    io::log("The app sent a script of its own, which Nimbus doesn't run.");
+                    continue;
+                }
+                _ => {}
+            }
             let x0 = stop.registers.get(&X0).copied().unwrap_or(0);
             let x1 = stop.registers.get(&X1).copied().unwrap_or(0);
             match stop.registers.get(&X16).copied() {
@@ -157,7 +184,7 @@ impl Debugger {
                     let address = self.prepare_region(x0, x1).await?;
                     self.set_register(X0, address, &stop.thread).await?;
                     regions += 1;
-                    io::log(format!("Prepared a region of {} KB.", x1 / 1024));
+                    io::log(format!("Prepared a region of {}.", size(x1)));
                 }
                 _ => {}
             }
@@ -217,6 +244,7 @@ impl Debugger {
     }
 
     async fn send(&mut self, command: &str) -> Result<()> {
+        tracing::debug!("to debugserver: {}", command.get(..80).unwrap_or(command));
         self.client
             .send_raw(packet(command).as_bytes())
             .await
@@ -280,6 +308,22 @@ fn little_endian(hex: &str) -> Option<u64> {
     Some(value)
 }
 
+/// A size in bytes as people read it: "16 KB", "1.5 GB".
+fn size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["bytes", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 || value.fract() == 0.0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 /// Wraps a command the way debugserver expects it: `$command#checksum`.
 fn packet(command: &str) -> String {
     let checksum = command
@@ -320,6 +364,21 @@ mod tests {
         assert_eq!(stop.registers[&X16], REQUEST_PREPARE_REGION);
         assert_eq!(stop.registers[&PC], 0x1_0000_4000);
         assert!(Stop::parse("W00").is_none());
+    }
+
+    #[test]
+    fn sizes_read_like_sizes() {
+        assert_eq!(size(16 * 1024), "16 KB");
+        assert_eq!(size(1_572_864 * 1024), "1.5 GB");
+        assert_eq!(size(512), "512 bytes");
+    }
+
+    #[test]
+    fn the_probe_breakpoint_is_recognised() {
+        // brk #0x69, as Henge encodes it.
+        let instruction = 0xd420_0d20u32;
+        assert_eq!(instruction & 0xFFE0_001F, 0xD420_0000);
+        assert_eq!((instruction >> 5) & 0xFFFF, PROBE_BREAKPOINT);
     }
 
     #[test]
