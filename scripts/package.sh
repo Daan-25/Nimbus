@@ -9,7 +9,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-export VERSION="${VERSION:-0.1.4}"
+export VERSION="${VERSION:-0.1.5}"
 DMG="$ROOT/build/Nimbus-$VERSION.dmg"
 # Finder remembers where the draft disk image was and saves that path in the finished one.
 # A temporary folder keeps this Mac's user name out of it.
