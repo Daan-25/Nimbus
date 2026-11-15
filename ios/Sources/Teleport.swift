@@ -213,6 +213,11 @@ struct TeleportView: View {
                 Text(picked == nil ? "Tap the map or search for a place." : (pickedName ?? coordinateText(picked)))
                     .font(.headline)
             }
+            if (picked ?? teleport.place) == CLLocationCoordinate2D(latitude: 0, longitude: 0) {
+                Text("Welcome to Null Island, where lost data ends up.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
 
             HStack {
                 if teleport.isActive {
@@ -259,6 +264,16 @@ struct TeleportView: View {
     private func find() async {
         let query = search.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return }
+        // Null Island: 0° N, 0° E, in the Atlantic. Mapmakers' joke about the place where
+        // locations end up when something sets them to zero by mistake.
+        if query.lowercased().replacingOccurrences(of: " ", with: "") == "nullisland" {
+            let island = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+            results = []
+            picked = island
+            pickedName = "Null Island"
+            camera = .region(MKCoordinateRegion(center: island, latitudinalMeters: 2_000_000, longitudinalMeters: 2_000_000))
+            return
+        }
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = query
         results = (try? await MKLocalSearch(request: request).start().mapItems) ?? []

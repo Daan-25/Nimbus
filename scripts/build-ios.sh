@@ -116,11 +116,10 @@ cat > "$APP/Info.plist" <<PLIST
             <key>CFBundleURLSchemes</key><array><string>nimbus</string></array>
         </dict>
     </array>
+    <!-- Upright on the iPhone, so tilting it (the falling icons follow gravity) doesn't turn the app. -->
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
-        <string>UIInterfaceOrientationLandscapeLeft</string>
-        <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
     <key>UISupportedInterfaceOrientations~ipad</key>
     <array>

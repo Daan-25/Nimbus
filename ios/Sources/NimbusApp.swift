@@ -1,4 +1,5 @@
 import SwiftUI
+import SpriteKit
 import UniformTypeIdentifiers
 
 @main
@@ -30,6 +31,9 @@ struct ContentView: View {
     @State private var tweaking: LibraryApp?
     @State private var showLog = false
     @State private var tab = Tab.apps
+    @State private var versionTaps = 0
+    @State private var showingPlanet = false
+    @State private var falling = FallingIcons.shared
 
     private enum Tab {
         case apps, browse, teleport, settings
@@ -57,6 +61,12 @@ struct ContentView: View {
                     if case .success(let url) = result { model.add(url) }
                 }
                 .refreshable { await model.check() }
+                .overlay {
+                    if falling.isFalling, let scene = falling.scene {
+                        SpriteView(scene: scene, options: [.allowsTransparency])
+                            .ignoresSafeArea()
+                    }
+                }
             }
             .tabItem { Label("Apps", systemImage: "square.grid.2x2") }
             .tag(Tab.apps)
@@ -151,6 +161,17 @@ struct ContentView: View {
         .sheet(item: $tweaking) { app in
             TweaksSheet(app: app)
         }
+        .fullScreenCover(isPresented: $showingPlanet) { PlanetEgg() }
+        .onReceive(NotificationCenter.default.publisher(for: .deviceDidShake)) { _ in
+            guard tab == .apps || falling.isFalling else { return }
+            let shown = model.refreshableApps.map(\.bundleID) + model.archivedApps.map(\.bundleID) + model.otherApps.map(\.bundleId)
+            var images: [String: UIImage] = [:]
+            for bundleID in shown {
+                if let icon = model.icons[bundleID] { images[bundleID] = roundedIcon(icon.uiImage, size: 88) }
+            }
+            withAnimation(.easeInOut(duration: 0.25)) { falling.toggle(icons: images) }
+        }
+        .sensoryFeedback(.impact(weight: .medium), trigger: falling.isFalling)
     }
 
     // MARK: Sections
@@ -431,6 +452,20 @@ struct ContentView: View {
     private var aboutSection: some View {
         Section {
             LabeledContent("Version", value: Self.appVersion)
+                .contentShape(Rectangle())
+                // Seven taps in a row, as on Android to become a developer.
+                .onTapGesture {
+                    versionTaps += 1
+                    if versionTaps >= 7 {
+                        versionTaps = 0
+                        showingPlanet = true
+                    }
+                }
+                // Starts over after a pause. A new tap cancels this wait, and then nothing resets.
+                .task(id: versionTaps) {
+                    guard versionTaps > 0, (try? await Task.sleep(for: .seconds(2))) != nil else { return }
+                    versionTaps = 0
+                }
         } header: {
             Text("About")
         }
@@ -621,6 +656,17 @@ struct AppIcon: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.225, style: .continuous))
+        // The falling icons start where these are, and these hide while they fall.
+        .background {
+            if let bundleID {
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { FallingIcons.shared.frames[bundleID] = proxy.frame(in: .global) }
+                        .onChange(of: proxy.frame(in: .global)) { FallingIcons.shared.frames[bundleID] = proxy.frame(in: .global) }
+                }
+            }
+        }
+        .opacity(bundleID != nil && FallingIcons.shared.isFalling && model.icons[bundleID!] != nil ? 0 : 1)
     }
 }
 

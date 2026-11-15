@@ -8,11 +8,15 @@ import AppKit
 /// An app's icon as the device's home screen shows it.
 struct AppIconImage {
     let image: Image
+    #if canImport(UIKit)
+    let uiImage: UIImage
+    #endif
 
     init?(file: URL) {
         #if canImport(UIKit)
         guard let platformImage = UIImage(contentsOfFile: file.path) else { return nil }
         image = Image(uiImage: platformImage)
+        uiImage = platformImage
         #else
         guard let platformImage = NSImage(contentsOf: file) else { return nil }
         image = Image(nsImage: platformImage)
