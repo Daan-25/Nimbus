@@ -163,11 +163,11 @@ private struct DeviceSummary: View {
                 Spacer()
                 Text(label)
                     .monospacedDigit()
-                    .foregroundStyle(warn ? Palette.warm : .secondary)
+                    .foregroundStyle(warn ? .orange : .secondary)
             }
             .font(.caption)
             ProgressView(value: Double(min(value, total)), total: Double(max(total, 1)))
-                .tint(warn ? Palette.warm : Palette.accent)
+                .tint(warn ? .orange : .accentColor)
         }
     }
 }
@@ -185,16 +185,6 @@ private struct MyAppsView: View {
                 if !model.hasCredentials { signInCard }
                 if model.isRateLimited { rateLimitCard }
                 if model.selectedDevice == nil { noDeviceCard }
-                SkyHeader(
-                    apps: skyApps,
-                    usedSlots: model.usedAppSlots,
-                    slots: AppModel.freeAppSlots,
-                    lifetime: AppModel.signatureLifetime,
-                    refreshWindow: AppModel.refreshWindow,
-                    arcHeight: 124
-                )
-                .padding(.horizontal, 4)
-                .padding(.bottom, 6)
                 appsSection
                 if model.canInstallPhoneApp { phoneAppCard }
             }
@@ -204,7 +194,6 @@ private struct MyAppsView: View {
             .frame(maxWidth: 820)
             .frame(maxWidth: .infinity)
         }
-        .background(SkyBackground())
         .navigationTitle("My Apps")
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first(where: { $0.pathExtension.lowercased() == "ipa" }) else { return false }
@@ -221,25 +210,9 @@ private struct MyAppsView: View {
         }
     }
 
-    /// Every app on the device whose expiry Nimbus knows: its own, and the ones Nimbus on
-    /// the device refreshes.
-    private var skyApps: [SkyApp] {
-        let mine = model.libraryAppsOnDevice
-            .filter { model.isInstalled($0) == true && model.isActive($0.bundleID) }
-            .map { app in
-                SkyApp(bundleID: app.bundleID, name: app.name, expires: model.expiry(of: app),
-                       icon: model.icons[app.bundleID], iconURL: app.iconURL)
-            }
-        let phone = model.otherAppsOnDevice.compactMap { app -> SkyApp? in
-            guard let expires = model.phoneManagedApps[app.bundleId], expires != .distantPast, app.active != false else { return nil }
-            return SkyApp(bundleID: app.bundleId, name: app.name, expires: expires, icon: model.icons[app.bundleId], iconURL: nil)
-        }
-        return mine + phone
-    }
-
     private var appsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            CardHeading("Apps")
+            CardHeading("Apps", detail: model.usedAppSlots.map { "\($0) of \(AppModel.freeAppSlots) slots used" })
             if model.libraryAppsOnDevice.isEmpty && model.otherAppsOnDevice.isEmpty {
                 ContentUnavailableView {
                     Label("No Apps Yet", systemImage: "square.grid.2x2")
@@ -558,7 +531,7 @@ private struct LibraryAppRow: View {
             } else {
                 Text((app.version.map { "\($0) · " } ?? "") + timeLeft(until: expires) + tweakCount)
                     .monospacedDigit()
-                    .foregroundStyle(expires.timeIntervalSinceNow < AppModel.refreshWindow ? Palette.warm : .secondary)
+                    .foregroundStyle(expires.timeIntervalSinceNow < AppModel.refreshWindow ? .orange : .secondary)
             }
         }
     }

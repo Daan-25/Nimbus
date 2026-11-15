@@ -100,8 +100,7 @@ struct BrowseView: View {
             }
         }
         .listStyle(.inset)
-        .scrollContentBackground(.hidden)
-        .background(SkyBackground())
+
     }
 }
 
@@ -214,7 +213,7 @@ struct AppIcon: View {
                     image.resizable().scaledToFill()
                 } placeholder: {
                     RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
-                        .fill(Palette.line)
+                        .fill(.quaternary)
                 }
             }
         }

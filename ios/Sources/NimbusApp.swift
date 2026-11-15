@@ -39,21 +39,14 @@ struct ContentView: View {
         TabView(selection: $tab) {
             NavigationStack {
                 List {
-                    Section {
-                        SkyView()
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
-                    }
-                    if !model.isConnected || model.error != nil { connectionSection.listRowBackground(Palette.card) }
-                    if !model.hasCredentials { accountHint.listRowBackground(Palette.card) }
-                    if !model.status.isEmpty { statusSection.listRowBackground(Palette.card) }
+                    if !model.isConnected || model.error != nil { connectionSection }
+                    if !model.hasCredentials { accountHint }
+                    if !model.status.isEmpty { statusSection }
                     if model.isConnected || !model.refreshableApps.isEmpty { appsSection }
                     if !model.archivedApps.isEmpty { archiveSection }
                     if !model.otherApps.isEmpty { otherAppsSection }
                 }
-                .skyBackground()
                 .navigationTitle("Nimbus")
-                .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Add App", systemImage: "plus") { choosingIPA = true }
@@ -74,18 +67,16 @@ struct ContentView: View {
 
             NavigationStack {
                 List {
-                    accountSection.listRowBackground(Palette.card)
-                    automaticSection.listRowBackground(Palette.card)
-                    advancedSection.listRowBackground(Palette.card)
-                    aboutSection.listRowBackground(Palette.card)
+                    accountSection
+                    automaticSection
+                    advancedSection
+                    aboutSection
                 }
-                .skyBackground()
                 .navigationTitle("Settings")
             }
             .tabItem { Label("Settings", systemImage: "gear") }
             .tag(Tab.settings)
         }
-        .tint(Palette.accent)
         .task {
             model.start()
             await model.check()
@@ -278,7 +269,6 @@ struct ContentView: View {
                     }
                 }
                 .padding(.vertical, 4)
-                .listRowBackground(Palette.card)
                 .swipeActions {
                     // Removing Nimbus from inside Nimbus would cut off the branch it sits on.
                     if app.bundleID != Bundle.main.bundleIdentifier {
@@ -306,10 +296,16 @@ struct ContentView: View {
             if model.refreshableApps.count > 1 {
                 Button("Refresh All", systemImage: "arrow.clockwise") { model.refreshAll() }
                     .disabled(model.isBusy || !model.isConnected)
-                    .listRowBackground(Palette.card)
+                    
             }
         } header: {
-            Text("Apps")
+            HStack {
+                Text("Apps")
+                Spacer()
+                if let used = model.usedAppSlots {
+                    Text("\(used) of \(PhoneModel.freeAppSlots) slots used")
+                }
+            }
         } footer: {
             Text("Swipe an app left to remove, archive or deactivate it, or right to open it, also with JIT. Keep Nimbus open while it works.")
         }
@@ -336,7 +332,7 @@ struct ContentView: View {
                         .disabled(model.isBusy || !model.isConnected)
                 }
                 .padding(.vertical, 4)
-                .listRowBackground(Palette.card)
+                
                 .contentShape(Rectangle())
                 .onTapGesture { if !model.isBusy && model.isConnected { model.open(app) } }
             }
@@ -364,7 +360,6 @@ struct ContentView: View {
                     }
                 }
                 .padding(.vertical, 4)
-                .listRowBackground(Palette.card)
                 .swipeActions {
                     removeButton(app)
                     activationButton(bundleID: app.bundleId, name: app.name)
@@ -459,7 +454,7 @@ struct ContentView: View {
         } else {
             Text(versionPrefix(app) + timeLeft(until: expires) + tweakCount(app))
                 .monospacedDigit()
-                .foregroundStyle(expires.timeIntervalSinceNow < PhoneModel.refreshWindow ? Palette.warm : .secondary)
+                .foregroundStyle(expires.timeIntervalSinceNow < PhoneModel.refreshWindow ? .orange : .secondary)
         }
     }
 
@@ -526,14 +521,6 @@ struct ContentView: View {
         } header: {
             Text("Advanced")
         }
-    }
-}
-
-extension View {
-    /// The sky's colour behind a list, with its rows on cards.
-    func skyBackground() -> some View {
-        scrollContentBackground(.hidden)
-            .background(SkyBackground())
     }
 }
 
@@ -624,7 +611,7 @@ struct AppIcon: View {
                     image.resizable().scaledToFill()
                 } placeholder: {
                     RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
-                        .fill(Palette.line)
+                        .fill(.quaternary)
                 }
             }
         }
