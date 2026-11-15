@@ -1118,6 +1118,11 @@ final class PhoneModel {
             "apps": jobs.map(\.ipaURL.path),
             "signed_cache": Library.signed.path,
             "sign_only": jobs.filter(\.signOnly).map(\.ipaURL.path),
+            // Tweaks the Mac added; without them a refresh here would take them off again.
+            "tweaks": Dictionary(uniqueKeysWithValues: jobs.compactMap { job -> (String, [String])? in
+                let tweaks = (job.existing?.tweakURLs ?? []).filter { FileManager.default.fileExists(atPath: $0.path) }
+                return tweaks.isEmpty ? nil : (job.ipaURL.path, tweaks.map(\.path))
+            }),
         ]
         let succeeded = await Engine.run("install", request: request) { event in
             Task { @MainActor in self.handle(event) }

@@ -378,6 +378,11 @@ struct ContentView: View {
         }
     }
 
+    private func tweakCount(_ app: LibraryApp) -> String {
+        let count = app.tweaks?.count ?? 0
+        return count == 0 ? "" : count == 1 ? " · 1 tweak" : " · \(count) tweaks"
+    }
+
     @ViewBuilder private func expiry(of app: LibraryApp) -> some View {
         let expires = model.expiry(of: app)
         if !model.isActive(app.bundleID) {
@@ -385,7 +390,7 @@ struct ContentView: View {
         } else if expires < .now {
             Text("Expired. Refresh to use it again.").foregroundStyle(.red)
         } else {
-            Text("Expires \(expires.formatted(.relative(presentation: .named)))")
+            Text("Expires \(expires.formatted(.relative(presentation: .named)))" + tweakCount(app))
                 .foregroundStyle(expires.timeIntervalSinceNow < PhoneModel.refreshWindow ? .orange : .secondary)
         }
     }

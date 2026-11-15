@@ -40,6 +40,9 @@ struct InstallRequest {
     /// can go back quickly, but not installed, since they're not meant to take up a slot.
     #[serde(default)]
     sign_only: Vec<PathBuf>,
+    /// Tweaks to build into apps, by the path of the app's .ipa in `apps`.
+    #[serde(default)]
+    tweaks: std::collections::HashMap<PathBuf, Vec<PathBuf>>,
 }
 
 /// Runs one command and reports a failure as an "error" event. Returns whether it succeeded.
@@ -92,6 +95,11 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
         "backup" => crate::archive::backup(arg(0)?, arg(1)?, arg(2)?).await,
         "restore" => crate::archive::restore(arg(0)?, arg(1)?, arg(2)?).await,
         "inspect" => inspect(Path::new(arg(0)?)),
+        "check-tweak" => {
+            let id = crate::tweaks::check(Path::new(arg(0)?))?;
+            io::emit(json!({ "event": "tweak", "name": id }));
+            Ok(())
+        }
         "jit" => crate::jit::enable(arg(0)?, arg(1)?).await,
         "ddi" => ddi(arg(0)?, args.get(1).map(String::as_str)).await,
         #[cfg(target_os = "macos")]
@@ -280,11 +288,13 @@ async fn install() -> Result<()> {
             Err(anyhow!("Can't find {}", path.display()))
         } else {
             let install = !request.sign_only.contains(&path);
+            let tweaks = request.tweaks.get(&path).cloned().unwrap_or_default();
             install_one(
                 &mut sideloader,
                 &mut link,
                 &team,
                 &path,
+                &tweaks,
                 request.increased_memory_limit,
                 request.signed_cache.as_deref(),
                 install,
@@ -332,6 +342,7 @@ async fn install_one<C: MaxCertsCallback>(
     link: &mut Link,
     team: &DeveloperTeam,
     ipa: &Path,
+    tweaks: &[PathBuf],
     increased_memory_limit: bool,
     signed_cache: Option<&Path>,
     install: bool,
@@ -341,8 +352,15 @@ async fn install_one<C: MaxCertsCallback>(
     // Signing is the first half of the work for each app, transferring and installing the second.
     let overall = move |part: f64| (index as f64 + part.clamp(0.0, 1.0)) / count as f64;
 
-    // Apps made for AltStore are told their app group before they're signed.
-    let unpacked = unpack_for_app_groups(ipa, &team.team_id)?;
+    // Apps made for AltStore are told their app group, and tweaks go in, before signing.
+    if !tweaks.is_empty() {
+        io::log(format!(
+            "Adding {} tweak{}…",
+            tweaks.len(),
+            if tweaks.len() == 1 { "" } else { "s" }
+        ));
+    }
+    let unpacked = prepare(ipa, &team.team_id, tweaks)?;
 
     io::log("Signing…");
     let signing = sideloader
@@ -457,7 +475,19 @@ fn main_info_plist<R: std::io::Read + std::io::Seek>(
 /// Signing gives an app its own group, named after its new bundle ID, so that name has to go
 /// into the Info.plist before signing. Unpacks such an app, writes the group into it and its
 /// extensions, and returns the app's folder to sign. Returns None for every other app.
-fn unpack_for_app_groups(ipa: &Path, team_id: &str) -> Result<Option<PathBuf>> {
+fn prepare(ipa: &Path, team_id: &str, tweaks: &[PathBuf]) -> Result<Option<PathBuf>> {
+    let unpacked = unpack_for_app_groups(ipa, team_id, !tweaks.is_empty())?;
+    if let Some(app) = &unpacked
+        && !tweaks.is_empty()
+        && let Err(error) = crate::tweaks::add(app, tweaks)
+    {
+        remove_unpacked(app);
+        return Err(error);
+    }
+    Ok(unpacked)
+}
+
+fn unpack_for_app_groups(ipa: &Path, team_id: &str, always: bool) -> Result<Option<PathBuf>> {
     use std::io::Read;
 
     let mut archive = zip::ZipArchive::new(std::fs::File::open(ipa)?)
@@ -470,12 +500,13 @@ fn unpack_for_app_groups(ipa: &Path, team_id: &str) -> Result<Option<PathBuf>> {
     let Ok(info) = plist::from_bytes::<plist::Dictionary>(&data) else {
         return Ok(None);
     };
-    let (true, Some(bundle_id)) = (
-        info.contains_key("ALTAppGroups"),
-        info.get("CFBundleIdentifier").and_then(|v| v.as_string()),
-    ) else {
+    let uses_groups = info.contains_key("ALTAppGroups");
+    let Some(bundle_id) = info.get("CFBundleIdentifier").and_then(|v| v.as_string()) else {
         return Ok(None);
     };
+    if !uses_groups && !always {
+        return Ok(None);
+    }
     // The same name sign_app gives the group: "group." and the signed bundle ID.
     let group = format!("group.{bundle_id}.{team_id}");
 
@@ -488,6 +519,9 @@ fn unpack_for_app_groups(ipa: &Path, team_id: &str) -> Result<Option<PathBuf>> {
         .context("Couldn't unpack the app")?;
 
     let app = folder.join(Path::new(&entry).parent().unwrap_or(Path::new("")));
+    if !uses_groups {
+        return Ok(Some(app));
+    }
     let mut plists = vec![app.join("Info.plist")];
     if let Ok(extensions) = std::fs::read_dir(app.join("PlugIns")) {
         plists.extend(extensions.flatten().map(|e| e.path().join("Info.plist")));
@@ -663,7 +697,7 @@ mod tests {
         let Ok(ipa) = std::env::var("NIMBUS_TEST_IPA") else {
             return;
         };
-        let app = unpack_for_app_groups(Path::new(&ipa), "TEAM123456")
+        let app = unpack_for_app_groups(Path::new(&ipa), "TEAM123456", false)
             .unwrap()
             .expect("an app with ALTAppGroups");
         let info: plist::Dictionary = plist::from_file(app.join("Info.plist")).unwrap();

@@ -255,6 +255,7 @@ struct ContentView: View {
 private struct LibraryAppRow: View {
     @Environment(AppModel.self) private var model
     let app: LibraryApp
+    @State private var showingTweaks = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -303,6 +304,9 @@ private struct LibraryAppRow: View {
                     Button("Set Up Again") { model.setUpPhoneApp(app) }
                         .disabled(model.isBusy || model.isInstalled(app) == false)
                 }
+                if !model.isPhoneApp(app) {
+                    Button("Tweaks…") { showingTweaks = true }
+                }
                 Button("Forget") { model.forget(app) }
                     .disabled(model.isBusy)
             } label: {
@@ -315,6 +319,14 @@ private struct LibraryAppRow: View {
         .contextMenu {
             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([app.ipaURL]) }
         }
+        .sheet(isPresented: $showingTweaks) {
+            TweaksSheet(appID: app.id)
+        }
+    }
+
+    private var tweakCount: String {
+        let count = app.tweaks?.count ?? 0
+        return count == 0 ? "" : count == 1 ? " · 1 tweak" : " · \(count) tweaks"
     }
 
     @ViewBuilder private var expiry: some View {
@@ -329,7 +341,7 @@ private struct LibraryAppRow: View {
             if expires < .now {
                 Text("Expired. Refresh to use it again.").foregroundStyle(.red)
             } else {
-                Text("Expires \(expires.formatted(.relative(presentation: .named)))")
+                Text("Expires \(expires.formatted(.relative(presentation: .named)))" + tweakCount)
                     .foregroundStyle(expires.timeIntervalSinceNow < AppModel.refreshWindow ? .orange : .secondary)
             }
         }
@@ -396,6 +408,72 @@ private struct OtherAppRow: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+        }
+    }
+}
+
+/// The tweaks of one app: what's added, adding more, and taking them off.
+private struct TweaksSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let appID: String
+    @State private var choosing = false
+
+    private var app: LibraryApp? {
+        model.library.first { $0.id == appID }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Tweaks for \(app?.name ?? "this app")")
+                .font(.title2.bold())
+            Text("A tweak is a library (.dylib) that the app loads when it starts. Nimbus builds tweaks into the app when it signs it, so they take effect at the next refresh and stay at every refresh after that. The app's own file isn't changed, so taking a tweak off undoes it.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            List {
+                let tweaks = app?.tweaks ?? []
+                if tweaks.isEmpty {
+                    Text("No tweaks yet.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(tweaks, id: \.self) { file in
+                    HStack {
+                        Image(systemName: "puzzlepiece.extension")
+                            .foregroundStyle(.tint)
+                        Text(LibraryApp.tweakName(file))
+                        Spacer()
+                        Button("Remove", role: .destructive) {
+                            if let app { model.removeTweak(file, from: app) }
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+            .frame(height: 160)
+
+            Label("Nimbus doesn't check what a tweak does. Only add tweaks you trust: a tweak can read everything the app can, and send it elsewhere. Tweaks made for jailbroken devices often need Substrate, and Nimbus refuses those, since they'd stop the app from starting.", systemImage: "exclamationmark.shield")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Button("Add Tweak…", systemImage: "plus") { choosing = true }
+                    .disabled(model.isBusy)
+                Spacer()
+                Button("Refresh Now") {
+                    if let app { model.refresh([app]) }
+                    dismiss()
+                }
+                .disabled(model.isBusy || model.isRateLimited)
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 480)
+        .fileImporter(isPresented: $choosing, allowedContentTypes: [UTType(filenameExtension: "dylib") ?? .data]) { result in
+            if case .success(let url) = result, let app { model.addTweak(url, to: app) }
         }
     }
 }

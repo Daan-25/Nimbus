@@ -462,6 +462,41 @@ final class AppModel {
         if !library.contains(where: { $0.ipaFile == app.ipaFile }) {
             Library.deleteIPA(app.ipaFile)
         }
+        for tweak in app.tweaks ?? [] where !library.contains(where: { $0.tweaks?.contains(tweak) == true }) {
+            Library.deleteIPA(tweak)
+        }
+    }
+
+    // MARK: Tweaks
+
+    /// Adds a tweak to an app. It goes in when the app is signed next, at its next refresh.
+    func addTweak(_ url: URL, to app: LibraryApp) {
+        guard !isBusy, let index = library.firstIndex(where: { $0.id == app.id }) else { return }
+        Task {
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            do {
+                _ = try await Helper.runOnce(["check-tweak", url.path])
+                let file = "tweak-\(UUID().uuidString.prefix(8))-\(url.lastPathComponent)"
+                try FileManager.default.copyItem(at: url, to: Library.ipaFolder.appendingPathComponent(file))
+                guard library.indices.contains(index), library[index].id == app.id else { return }
+                library[index].tweaks = (library[index].tweaks ?? []) + [file]
+                phase = .done
+                status = "\(url.lastPathComponent) goes into \(app.name) at its next refresh."
+            } catch {
+                fail("\(url.lastPathComponent) can't be added: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Takes a tweak off an app. It's gone after the app's next refresh.
+    func removeTweak(_ file: String, from app: LibraryApp) {
+        guard let index = library.firstIndex(where: { $0.id == app.id }) else { return }
+        library[index].tweaks?.removeAll { $0 == file }
+        if library[index].tweaks?.isEmpty == true { library[index].tweaks = nil }
+        if !library.contains(where: { $0.tweaks?.contains(file) == true }) {
+            Library.deleteIPA(file)
+        }
     }
 
     // MARK: Archiving
@@ -704,6 +739,10 @@ final class AppModel {
                 "udid": device.udid,
                 "signed_cache": Library.signedFolder.path,
                 "sign_only": jobs.filter(\.signOnly).map { Library.ipaFolder.appendingPathComponent($0.ipaFile).path },
+                "tweaks": Dictionary(uniqueKeysWithValues: jobs.compactMap { job -> (String, [String])? in
+                    guard let tweaks = job.existing?.tweakURLs, !tweaks.isEmpty else { return nil }
+                    return (Library.ipaFolder.appendingPathComponent(job.ipaFile).path, tweaks.map(\.path))
+                }),
             ])
         } catch {
             fail(error.localizedDescription)
@@ -810,7 +849,7 @@ final class AppModel {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(apps) else { return false }
-        let files = Set(apps.map(\.ipaFile)).map {
+        let files = Set(apps.flatMap { [$0.ipaFile] + ($0.tweaks ?? []) }).map {
             ["path": Library.ipaFolder.appendingPathComponent($0).path, "name": $0]
         }
 
@@ -959,7 +998,8 @@ final class AppModel {
             sourceURL: job.origin?.sourceURL ?? job.existing?.sourceURL,
             sourceBundleID: job.origin?.bundleID ?? job.existing?.sourceBundleID,
             sourceVersion: job.origin?.version ?? job.existing?.sourceVersion,
-            iconURL: job.origin?.iconURL ?? job.existing?.iconURL
+            iconURL: job.origin?.iconURL ?? job.existing?.iconURL,
+            tweaks: job.existing?.tweaks
         )
         // The app was forgotten while it was being refreshed.
         if job.existing != nil && !library.contains(where: { $0.id == app.id }) { return }

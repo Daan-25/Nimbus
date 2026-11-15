@@ -23,5 +23,6 @@ mod profiles;
 #[cfg(target_os = "macos")]
 mod setup;
 mod storage;
+mod tweaks;
 
 pub use engine::run;
