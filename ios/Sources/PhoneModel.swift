@@ -28,6 +28,8 @@ enum Library {
     static let archive = support.appendingPathComponent("Archive", isDirectory: true)
     /// Each app as it was signed, to put an archived app back without signing in.
     static let signed = support.appendingPathComponent("Signed", isDirectory: true)
+    /// Home-screen icons of apps, as <bundle ID>.png.
+    static let icons = support.appendingPathComponent("Icons", isDirectory: true)
 
     static func load() -> [LibraryApp] {
         guard let data = try? Data(contentsOf: file) else { return [] }
@@ -134,6 +136,8 @@ final class PhoneModel {
     var connection = Connection.checking
     /// Sideloaded apps on this device; nil until loaded.
     var deviceApps: [DeviceApp]?
+    /// Icons of apps by bundle ID, as the device shows them.
+    var icons: [String: AppIconImage] = AppIconImage.load(from: Library.icons)
     var error: String?
     /// The steps of the last connection test; nil until one ran.
     var diagnosis: [String]?
@@ -369,6 +373,22 @@ final class PhoneModel {
         return (deviceApps ?? []).filter { !known.contains($0.bundleId) }
     }
 
+    // MARK: Icons
+
+    /// Asks the device for the icons of its apps that Nimbus doesn't have yet. They stay on
+    /// disk, so an archived app keeps its icon.
+    private func fetchMissingIcons(udid: String) async {
+        let missing = (deviceApps ?? []).map(\.bundleId).filter { icons[$0] == nil }
+        guard !missing.isEmpty,
+              let event = try? await Engine.runOnce("icons", args: [udid, Library.icons.path] + missing)
+        else { return }
+        for bundleID in event.files ?? [] {
+            if let icon = AppIconImage(file: Library.icons.appendingPathComponent("\(bundleID).png")) {
+                icons[bundleID] = icon
+            }
+        }
+    }
+
     func expiry(of app: LibraryApp) -> Date {
         let fromMac = app.expiresAt ?? app.installedAt.addingTimeInterval(Self.signatureLifetime)
         return max(fromMac, refreshedUntil[app.bundleID] ?? .distantPast)
@@ -419,6 +439,7 @@ final class PhoneModel {
             connection = .connected(device)
             deviceApps = try await Engine.runOnce("apps", args: [device.udid]).apps ?? []
             error = nil
+            await fetchMissingIcons(udid: device.udid)
             scheduleNextRefresh()
             if Date.now.timeIntervalSince(lastSourcesReload) > Self.autoRefreshInterval {
                 Task { await reloadSources() }
@@ -1333,6 +1354,11 @@ final class PhoneModel {
     private func installed(_ job: Job, _ event: HelperEvent) {
         let expires = event.expires.flatMap { try? Date($0, strategy: .iso8601) }
             ?? Date.now.addingTimeInterval(Self.signatureLifetime)
+        // A new version may have a new icon; the next look at the device fetches it.
+        if let bundleID = event.bundleId, job.existing?.version != event.version {
+            icons[bundleID] = nil
+            try? FileManager.default.removeItem(at: Library.icons.appendingPathComponent("\(bundleID).png"))
+        }
         if let app = job.existing {
             refreshedUntil[app.bundleID] = expires
             // An archived app that had to be signed again still needs its data back.

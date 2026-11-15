@@ -122,6 +122,8 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
         #[cfg(target_os = "macos")]
         "sync-phone" => crate::setup::sync_phone(arg(0)?, arg(1)?).await,
         #[cfg(target_os = "macos")]
+        "screenshot" => screenshot(arg(0)?, Path::new(arg(1)?)).await,
+        #[cfg(target_os = "macos")]
         "crash-log" => crate::setup::crash_log(arg(0)?, arg(1)?).await,
         #[cfg(target_os = "macos")]
         "pairing-file" => crate::setup::save_pairing_file(arg(0)?, arg(1)?).await,
@@ -211,6 +213,32 @@ async fn list_apps(udid: &str) -> Result<()> {
     }
     list.sort_by_key(|a| a["name"].as_str().unwrap_or_default().to_lowercase());
     io::emit(json!({ "event": "apps", "apps": list }));
+    Ok(())
+}
+
+/// Saves what the device's screen shows as a PNG, to check how an app looks. Needs the
+/// developer disk image, which `ddi` mounts.
+#[cfg(target_os = "macos")]
+async fn screenshot(udid: &str, file: &Path) -> Result<()> {
+    use idevice::{
+        RsdService,
+        dvt::{remote_server::RemoteServerClient, screenshot::ScreenshotClient},
+    };
+    let link = device::link_for(Some(udid)).await?;
+    let mut tunnel = link.into_tunnel(udid).await?;
+    let mut server = RemoteServerClient::connect_rsd(&mut tunnel.adapter, &mut tunnel.services)
+        .await
+        .map_err(|e| anyhow!("Can't reach the device's developer services: {e}"))?;
+    server.read_message(0).await.ok();
+    let mut client = ScreenshotClient::new(&mut server)
+        .await
+        .map_err(|e| anyhow!("Can't take a screenshot: {e}"))?;
+    let png = client
+        .take_screenshot()
+        .await
+        .map_err(|e| anyhow!("Can't take a screenshot: {e}"))?;
+    std::fs::write(file, png)?;
+    io::emit(json!({ "event": "screenshot", "file": file }));
     Ok(())
 }
 

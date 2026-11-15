@@ -100,6 +100,8 @@ struct BrowseView: View {
             }
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+        .background(Palette.sky)
     }
 }
 
@@ -205,16 +207,14 @@ struct AppIcon: View {
 
     var body: some View {
         Group {
-            if let bundleID, let image = model.icons[bundleID] {
-                Image(nsImage: image).resizable().scaledToFill()
+            if let bundleID, let icon = model.icons[bundleID] {
+                icon.image.resizable().scaledToFill()
             } else {
                 AsyncImage(url: url) { image in
                     image.resizable().scaledToFill()
                 } placeholder: {
-                    Image(systemName: "app.fill")
-                        .resizable()
-                        .scaledToFit()
-                        .foregroundStyle(.tint)
+                    RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
+                        .fill(Palette.line)
                 }
             }
         }

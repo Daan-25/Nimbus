@@ -63,7 +63,7 @@ final class AppModel {
     var deviceApps: [DeviceApp]?
     /// Icons of apps by bundle ID, as the device shows them. Kept on disk, so an archived app
     /// still has its icon.
-    var icons: [String: NSImage] = AppModel.loadIcons()
+    var icons: [String: AppIconImage] = AppIconImage.load(from: Library.iconsFolder)
 
     var appIDsAvailable: Int? = UserDefaults.standard.object(forKey: "appIDsAvailable") as? Int {
         didSet { defaults.set(appIDsAvailable, forKey: "appIDsAvailable") }
@@ -294,17 +294,6 @@ final class AppModel {
         await fetchMissingIcons(udid: udid)
     }
 
-    private static func loadIcons() -> [String: NSImage] {
-        let files = (try? FileManager.default.contentsOfDirectory(at: Library.iconsFolder, includingPropertiesForKeys: nil)) ?? []
-        var icons: [String: NSImage] = [:]
-        for file in files where file.pathExtension == "png" {
-            if let image = NSImage(contentsOf: file) {
-                icons[file.deletingPathExtension().lastPathComponent] = image
-            }
-        }
-        return icons
-    }
-
     /// Asks the device for the icons of its apps that Nimbus doesn't have yet.
     private func fetchMissingIcons(udid: String) async {
         let missing = (deviceApps ?? []).map(\.bundleId).filter { icons[$0] == nil }
@@ -313,7 +302,7 @@ final class AppModel {
         else { return }
         for bundleID in event.files ?? [] {
             let file = Library.iconsFolder.appendingPathComponent("\(bundleID).png")
-            if let image = NSImage(contentsOf: file) { icons[bundleID] = image }
+            if let icon = AppIconImage(file: file) { icons[bundleID] = icon }
         }
     }
 

@@ -143,11 +143,6 @@ private struct DeviceSummary: View {
                 } icon: {
                     Image(systemName: "iphone")
                 }
-                if let used = model.usedAppSlots {
-                    meter("App slots", value: used, of: AppModel.freeAppSlots, label: "\(used) of \(AppModel.freeAppSlots)",
-                          warn: used >= AppModel.freeAppSlots)
-                        .help("A free Apple ID can have \(AppModel.freeAppSlots) sideloaded apps on a device at once, other tools included. Archive an app to free a slot.")
-                }
                 if let available = model.appIDsAvailable, let max = model.appIDsMax {
                     meter("App IDs left", value: available, of: max, label: "\(available) of \(max)", warn: available <= 1)
                         .help("Every new app uses an app ID. A free Apple ID can create \(max) a week. Refreshing doesn't use new ones.")
@@ -168,11 +163,11 @@ private struct DeviceSummary: View {
                 Spacer()
                 Text(label)
                     .monospacedDigit()
-                    .foregroundStyle(warn ? .orange : .secondary)
+                    .foregroundStyle(warn ? Palette.warm : .secondary)
             }
             .font(.caption)
             ProgressView(value: Double(min(value, total)), total: Double(max(total, 1)))
-                .tint(warn ? .orange : .accentColor)
+                .tint(warn ? Palette.warm : Palette.accent)
         }
     }
 }
@@ -190,6 +185,16 @@ private struct MyAppsView: View {
                 if !model.hasCredentials { signInCard }
                 if model.isRateLimited { rateLimitCard }
                 if model.selectedDevice == nil { noDeviceCard }
+                SkyHeader(
+                    apps: skyApps,
+                    usedSlots: model.usedAppSlots,
+                    slots: AppModel.freeAppSlots,
+                    lifetime: AppModel.signatureLifetime,
+                    refreshWindow: AppModel.refreshWindow,
+                    arcHeight: 124
+                )
+                .padding(.horizontal, 4)
+                .padding(.bottom, 6)
                 appsSection
                 if model.canInstallPhoneApp { phoneAppCard }
             }
@@ -199,6 +204,7 @@ private struct MyAppsView: View {
             .frame(maxWidth: 820)
             .frame(maxWidth: .infinity)
         }
+        .background(Palette.sky)
         .navigationTitle("My Apps")
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first(where: { $0.pathExtension.lowercased() == "ipa" }) else { return false }
@@ -215,9 +221,25 @@ private struct MyAppsView: View {
         }
     }
 
+    /// Every app on the device whose expiry Nimbus knows: its own, and the ones Nimbus on
+    /// the device refreshes.
+    private var skyApps: [SkyApp] {
+        let mine = model.libraryAppsOnDevice
+            .filter { model.isInstalled($0) == true && model.isActive($0.bundleID) }
+            .map { app in
+                SkyApp(bundleID: app.bundleID, name: app.name, expires: model.expiry(of: app),
+                       icon: model.icons[app.bundleID], iconURL: app.iconURL)
+            }
+        let phone = model.otherAppsOnDevice.compactMap { app -> SkyApp? in
+            guard let expires = model.phoneManagedApps[app.bundleId], expires != .distantPast, app.active != false else { return nil }
+            return SkyApp(bundleID: app.bundleId, name: app.name, expires: expires, icon: model.icons[app.bundleId], iconURL: nil)
+        }
+        return mine + phone
+    }
+
     private var appsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            CardHeading("Apps", detail: model.nextExpiry.map { "Next expires \($0.formatted(.relative(presentation: .named)))" })
+            CardHeading("Apps")
             if model.libraryAppsOnDevice.isEmpty && model.otherAppsOnDevice.isEmpty {
                 ContentUnavailableView {
                     Label("No Apps Yet", systemImage: "square.grid.2x2")
@@ -534,8 +556,9 @@ private struct LibraryAppRow: View {
             if expires < .now {
                 Text("Expired. Refresh to use it again.").foregroundStyle(.red)
             } else {
-                Text("Expires \(expires.formatted(.relative(presentation: .named)))" + tweakCount)
-                    .foregroundStyle(expires.timeIntervalSinceNow < AppModel.refreshWindow ? .orange : .secondary)
+                Text((app.version.map { "\($0) · " } ?? "") + timeLeft(until: expires) + tweakCount)
+                    .monospacedDigit()
+                    .foregroundStyle(expires.timeIntervalSinceNow < AppModel.refreshWindow ? Palette.warm : .secondary)
             }
         }
     }
@@ -560,7 +583,8 @@ private struct OtherAppRow: View {
             } else if expires < .now {
                 Text("Installed by Nimbus on the device. Expired; refresh it there.").foregroundStyle(.red)
             } else {
-                Text("Installed by Nimbus on the device, which refreshes it. Expires \(expires.formatted(.relative(presentation: .named)))")
+                Text((app.version.map { "\($0) · " } ?? "") + timeLeft(until: expires) + " · refreshed by Nimbus on the device")
+                    .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
         } else {

@@ -34,4 +34,4 @@ ruzstd = "0.9"
 
 # Setting up the iPhone app is something only the Mac does.
 [target.'cfg(target_os = "macos")'.dependencies]
-idevice = { version = "0.1.68", default-features = false, features = ["crashreportcopymobile"] }
+idevice = { version = "0.1.68", default-features = false, features = ["crashreportcopymobile", "dvt"] }

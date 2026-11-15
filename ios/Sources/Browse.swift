@@ -59,6 +59,7 @@ struct BrowseView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                .listRowBackground(Palette.card)
             }
             ForEach(results, id: \.source.id) { source, apps in
                 Section {
@@ -90,8 +91,10 @@ struct BrowseView: View {
                         }
                     }
                 }
+                .listRowBackground(Palette.card)
             }
         }
+        .skyBackground()
         .refreshable { await model.reloadSources() }
     }
 }

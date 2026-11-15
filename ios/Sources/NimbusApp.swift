@@ -39,12 +39,30 @@ struct ContentView: View {
         TabView(selection: $tab) {
             NavigationStack {
                 List {
-                    connectionSection
-                    if !model.hasCredentials { accountHint }
+                    Section {
+                        SkyView()
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                    }
+                    if !model.isConnected || model.error != nil { connectionSection.listRowBackground(Palette.card) }
+                    if !model.hasCredentials { accountHint.listRowBackground(Palette.card) }
+                    if !model.status.isEmpty { statusSection.listRowBackground(Palette.card) }
                     if model.isConnected || !model.refreshableApps.isEmpty { appsSection }
-                    if !model.status.isEmpty { statusSection }
+                    if !model.archivedApps.isEmpty { archiveSection }
+                    if !model.otherApps.isEmpty { otherAppsSection }
                 }
+                .skyBackground()
                 .navigationTitle("Nimbus")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Add App", systemImage: "plus") { choosingIPA = true }
+                            .disabled(model.isBusy || !model.isConnected)
+                    }
+                }
+                .fileImporter(isPresented: $choosingIPA, allowedContentTypes: [.ipa]) { result in
+                    if case .success(let url) = result { model.add(url) }
+                }
                 .refreshable { await model.check() }
             }
             .tabItem { Label("Apps", systemImage: "square.grid.2x2") }
@@ -56,15 +74,18 @@ struct ContentView: View {
 
             NavigationStack {
                 List {
-                    accountSection
-                    automaticSection
-                    advancedSection
+                    accountSection.listRowBackground(Palette.card)
+                    automaticSection.listRowBackground(Palette.card)
+                    advancedSection.listRowBackground(Palette.card)
+                    aboutSection.listRowBackground(Palette.card)
                 }
+                .skyBackground()
                 .navigationTitle("Settings")
             }
             .tabItem { Label("Settings", systemImage: "gear") }
             .tag(Tab.settings)
         }
+        .tint(Palette.accent)
         .task {
             model.start()
             await model.check()
@@ -224,12 +245,12 @@ struct ContentView: View {
 
     private var appsSection: some View {
         Section {
-            if model.refreshableApps.isEmpty && model.otherApps.isEmpty && model.archivedApps.isEmpty {
-                Text(model.deviceApps == nil ? "Loading…" : "No sideloaded apps on this device.")
+            if model.refreshableApps.isEmpty {
+                Text(model.deviceApps == nil ? "Loading…" : "No apps from Nimbus on this device yet. Find some under Browse, or add an .ipa file with +.")
                     .foregroundStyle(.secondary)
             }
             ForEach(model.refreshableApps) { app in
-                HStack(spacing: 12) {
+                HStack(spacing: 14) {
                     // An app from a source opens its page.
                     if let page = model.sourceApp(for: app) {
                         NavigationLink {
@@ -256,6 +277,8 @@ struct ContentView: View {
                             .disabled(model.isBusy || !model.isConnected)
                     }
                 }
+                .padding(.vertical, 4)
+                .listRowBackground(Palette.card)
                 .swipeActions {
                     // Removing Nimbus from inside Nimbus would cut off the branch it sits on.
                     if app.bundleID != Bundle.main.bundleIdentifier {
@@ -280,13 +303,29 @@ struct ContentView: View {
                     }
                 }
             }
+            if model.refreshableApps.count > 1 {
+                Button("Refresh All", systemImage: "arrow.clockwise") { model.refreshAll() }
+                    .disabled(model.isBusy || !model.isConnected)
+                    .listRowBackground(Palette.card)
+            }
+        } header: {
+            Text("Apps")
+        } footer: {
+            Text("Swipe an app left to remove, archive or deactivate it, or right to open it, also with JIT. Keep Nimbus open while it works.")
+        }
+    }
+
+    private var archiveSection: some View {
+        Section {
             ForEach(model.archivedApps) { app in
-                HStack(spacing: 12) {
-                    AppIcon(url: app.iconURL)
-                        .opacity(0.5)
+                HStack(spacing: 14) {
+                    AppIcon(url: app.iconURL, bundleID: app.bundleID, size: 44)
+                        .saturation(0)
+                        .opacity(0.6)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(app.name)
-                        Text("Archived. Its data is kept, and it doesn't take up a slot.")
+                            .font(.body.weight(.medium))
+                        Text(app.version.map { "\($0) · data kept" } ?? "Data kept")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -296,15 +335,27 @@ struct ContentView: View {
                         .buttonStyle(.bordered)
                         .disabled(model.isBusy || !model.isConnected)
                 }
+                .padding(.vertical, 4)
+                .listRowBackground(Palette.card)
                 .contentShape(Rectangle())
                 .onTapGesture { if !model.isBusy && model.isConnected { model.open(app) } }
             }
+        } header: {
+            Text("In the archive")
+        } footer: {
+            Text("Archived apps don't take up a slot. Opening one puts it back with its data, and archives the app you used least when all slots are in use.")
+        }
+    }
+
+    private var otherAppsSection: some View {
+        Section {
             ForEach(model.otherApps) { app in
-                HStack(spacing: 12) {
-                    AppIcon(url: nil)
-                        .opacity(0.4)
+                HStack(spacing: 14) {
+                    AppIcon(url: nil, bundleID: app.bundleId, size: 44)
+                        .opacity(0.7)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(app.name)
+                            .font(.body.weight(.medium))
                         Text(app.active == false
                              ? "Deactivated. It won't open until you activate it; its data is kept."
                              : "Nimbus has no .ipa file of this app. Add its .ipa to refresh it here.")
@@ -312,39 +363,25 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .padding(.vertical, 4)
+                .listRowBackground(Palette.card)
                 .swipeActions {
                     removeButton(app)
                     activationButton(bundleID: app.bundleId, name: app.name)
                 }
                 .swipeActions(edge: .leading) { jitButton(bundleID: app.bundleId, name: app.name) }
             }
-            Button("Add App…", systemImage: "plus") { choosingIPA = true }
-                .disabled(model.isBusy || !model.isConnected)
-                .fileImporter(isPresented: $choosingIPA, allowedContentTypes: [.ipa]) { result in
-                    if case .success(let url) = result { model.add(url) }
-                }
-            if model.refreshableApps.count > 1 {
-                Button("Refresh All", systemImage: "arrow.clockwise") { model.refreshAll() }
-                    .disabled(model.isBusy || !model.isConnected)
-            }
         } header: {
-            HStack {
-                Text("Apps")
-                Spacer()
-                if let used = model.usedAppSlots {
-                    Text("\(used) of \(PhoneModel.freeAppSlots) slots used")
-                }
-            }
-        } footer: {
-            Text("Find apps under Browse, add an .ipa file from this device, or open one with Nimbus from Files or Safari. Tap an archived app to open it: Nimbus puts it back and, when all slots are in use, archives the app you used least. Swipe an app left to remove, archive or deactivate it, or right to open it, also with JIT. Keep Nimbus open while it works; refreshing Nimbus itself closes it when it's done.")
+            Text("Other apps")
         }
     }
 
     private func appLabel(_ app: LibraryApp) -> some View {
-        HStack(spacing: 12) {
-            AppIcon(url: app.iconURL)
+        HStack(spacing: 14) {
+            AppIcon(url: app.iconURL, bundleID: app.bundleID, size: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name)
+                    .font(.body.weight(.medium))
                 expiry(of: app).font(.caption)
             }
         }
@@ -388,6 +425,26 @@ struct ContentView: View {
         }
     }
 
+    private func versionPrefix(_ app: LibraryApp) -> String {
+        app.version.map { "\($0) · " } ?? ""
+    }
+
+    private var aboutSection: some View {
+        Section {
+            LabeledContent("Version", value: Self.appVersion)
+        } header: {
+            Text("About")
+        }
+    }
+
+    /// Nimbus's own version, with its build number when that says something more.
+    static let appVersion: String = {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info["CFBundleVersion"] as? String
+        return build == nil || build == version ? version : "\(version) (\(build!))"
+    }()
+
     private func tweakCount(_ app: LibraryApp) -> String {
         let count = app.tweaks?.count ?? 0
         return count == 0 ? "" : count == 1 ? " · 1 tweak" : " · \(count) tweaks"
@@ -400,8 +457,9 @@ struct ContentView: View {
         } else if expires < .now {
             Text("Expired. Refresh to use it again.").foregroundStyle(.red)
         } else {
-            Text("Expires \(expires.formatted(.relative(presentation: .named)))" + tweakCount(app))
-                .foregroundStyle(expires.timeIntervalSinceNow < PhoneModel.refreshWindow ? .orange : .secondary)
+            Text(versionPrefix(app) + timeLeft(until: expires) + tweakCount(app))
+                .monospacedDigit()
+                .foregroundStyle(expires.timeIntervalSinceNow < PhoneModel.refreshWindow ? Palette.warm : .secondary)
         }
     }
 
@@ -468,6 +526,14 @@ struct ContentView: View {
         } header: {
             Text("Advanced")
         }
+    }
+}
+
+extension View {
+    /// The sky's colour behind a list, with its rows on cards.
+    func skyBackground() -> some View {
+        scrollContentBackground(.hidden)
+            .background(Palette.sky)
     }
 }
 
@@ -544,17 +610,23 @@ struct TweaksSheet: View {
 
 /// An app's icon from the web, with a placeholder until it's loaded or when there is none.
 struct AppIcon: View {
+    @Environment(PhoneModel.self) private var model
     let url: URL?
+    var bundleID: String? = nil
     var size: CGFloat = 36
 
     var body: some View {
-        AsyncImage(url: url) { image in
-            image.resizable().scaledToFill()
-        } placeholder: {
-            Image(systemName: "app.fill")
-                .resizable()
-                .scaledToFit()
-                .foregroundStyle(.tint)
+        Group {
+            if let bundleID, let icon = model.icons[bundleID] {
+                icon.image.resizable().scaledToFill()
+            } else {
+                AsyncImage(url: url) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
+                        .fill(Palette.line)
+                }
+            }
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.225, style: .continuous))
