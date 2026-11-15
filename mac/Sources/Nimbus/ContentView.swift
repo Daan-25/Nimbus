@@ -29,12 +29,17 @@ struct ContentView: View {
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
         } detail: {
-            switch page ?? .myApps {
-            case .myApps:
-                MyAppsView(choosingIPA: $choosingIPA)
-            case .browse:
-                BrowseView()
+            Group {
+                switch page ?? .myApps {
+                case .myApps:
+                    MyAppsView(choosingIPA: $choosingIPA)
+                case .browse:
+                    BrowseView()
+                }
             }
+            // On the detail, not the window: a minimum size on the whole split view makes the
+            // sidebar push the content out of the window for a moment when it slides in.
+            .frame(minWidth: 520, minHeight: 540)
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {

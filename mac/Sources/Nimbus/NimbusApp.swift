@@ -8,7 +8,6 @@ struct NimbusApp: App {
         Window("Nimbus", id: "main") {
             ContentView()
                 .environment(model)
-                .frame(minWidth: 780, minHeight: 540)
         }
         .windowResizability(.contentMinSize)
         .windowToolbarStyle(.unified)
