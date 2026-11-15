@@ -21,7 +21,7 @@ It's an alternative to AltStore and SideStore, built to remove the parts that ge
 - **Works with AltStore sources.** Add a source, read what an app is and see its screenshots, then install and
   update it from Nimbus. Downloads are
   checked against the source's checksum when it has one.
-- **Tweaks.** Add a library (.dylib) to an app, and Nimbus builds it in every time it signs the app. Useful to
+- **Tweaks.** Add a library (.dylib) or a .deb package to an app, and Nimbus builds it in every time it signs the app. Useful to
   fix an old app or to extend one. Nimbus refuses tweaks that need a jailbreak, but doesn't check what a tweak
   does, so only add ones you trust.
 - **No separate server.** No AltServer and no mail plug-in. One app does everything.
@@ -164,7 +164,7 @@ downloading those needs a Patreon sign-in.
   Open App action in Shortcuts (built, not yet confirmed on a device)
 - [x] Refresh keeps the signed copies of archived apps good, so restoring never needs a sign-in
 - [x] Tweaks: add a .dylib to an app from the Mac, kept at every refresh
-- [ ] Tweaks from .deb packages, and managing tweaks on the iPhone
+- [x] Tweaks from .deb packages, and managing tweaks on the iPhone for apps it installed itself
 
 ## Credits
 

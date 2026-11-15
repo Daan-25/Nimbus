@@ -26,6 +26,8 @@ struct ContentView: View {
     @State private var removing: DeviceApp?
     /// The app the user is about to archive.
     @State private var archiving: LibraryApp?
+    /// The app whose tweaks are shown.
+    @State private var tweaking: LibraryApp?
     @State private var showLog = false
     @State private var tab = Tab.apps
 
@@ -129,6 +131,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showLog) {
             LogSheet(lines: model.log)
+        }
+        .sheet(item: $tweaking) { app in
+            TweaksSheet(app: app)
         }
     }
 
@@ -267,6 +272,11 @@ struct ContentView: View {
                             .tint(.green)
                             .disabled(model.isBusy || !model.isConnected)
                         jitButton(bundleID: app.bundleID, name: app.name)
+                    }
+                }
+                .contextMenu {
+                    if app.bundleID != Bundle.main.bundleIdentifier {
+                        Button("Tweaks…", systemImage: "puzzlepiece.extension") { tweaking = app }
                     }
                 }
             }
@@ -462,7 +472,74 @@ struct ContentView: View {
 }
 
 extension UTType {
+    /// Tweaks: a .dylib, or a .deb package with tweaks in it.
+    static let tweaks = [UTType(filenameExtension: "dylib"), UTType(filenameExtension: "deb")].compactMap { $0 }
+
     static let ipa = UTType("com.apple.itunes.ipa") ?? UTType(filenameExtension: "ipa") ?? .data
+}
+
+/// The tweaks of one app: what's added, adding more, and taking them off.
+struct TweaksSheet: View {
+    @Environment(PhoneModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let app: LibraryApp
+    @State private var choosing = false
+
+    private var current: LibraryApp { model.current(app) }
+    private var editable: Bool { model.isLocal(current) }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    let tweaks = current.tweaks ?? []
+                    if tweaks.isEmpty {
+                        Text("No tweaks yet.").foregroundStyle(.secondary)
+                    }
+                    ForEach(tweaks, id: \.self) { file in
+                        Label(LibraryApp.tweakName(file), systemImage: "puzzlepiece.extension")
+                            .swipeActions {
+                                if editable {
+                                    Button("Remove", role: .destructive) { model.removeTweak(file, from: current) }
+                                }
+                            }
+                    }
+                    if editable {
+                        Button("Add Tweak…", systemImage: "plus") { choosing = true }
+                            .disabled(model.isBusy)
+                    }
+                } footer: {
+                    Text(editable
+                         ? "A tweak is a library (.dylib) that the app loads when it starts; a .deb package works too. Nimbus builds tweaks in when it signs the app, so they take effect at the next refresh. Swipe a tweak to remove it."
+                         : "Your Mac installed this app, so you manage its tweaks in Nimbus on the Mac.")
+                }
+                Section {
+                    Label("Nimbus doesn't check what a tweak does. Only add tweaks you trust: a tweak can read everything the app can, and send it elsewhere. Tweaks that need a jailbreak are refused.", systemImage: "exclamationmark.shield")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if editable {
+                    Section {
+                        Button("Refresh Now") {
+                            model.refresh([current])
+                            dismiss()
+                        }
+                        .disabled(model.isBusy || !model.isConnected)
+                    }
+                }
+            }
+            .navigationTitle("Tweaks for \(app.name)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .fileImporter(isPresented: $choosing, allowedContentTypes: UTType.tweaks) { result in
+                if case .success(let url) = result { model.addTweak(url, to: current) }
+            }
+        }
+    }
 }
 
 /// An app's icon from the web, with a placeholder until it's loaded or when there is none.

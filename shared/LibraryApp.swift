@@ -31,7 +31,9 @@ struct LibraryApp: Codable, Hashable, Identifiable {
 
     /// A tweak's name as the user named the file, without the prefix Nimbus stores it under.
     static func tweakName(_ file: String) -> String {
-        let parts = file.split(separator: "-", maxSplits: 2)
+        // tweak-<id>-<name> from the Mac, local-tweak-<id>-<name> from the device itself.
+        let bare = file.hasPrefix("local-") ? String(file.dropFirst("local-".count)) : file
+        let parts = bare.split(separator: "-", maxSplits: 2)
         return parts.count == 3 && parts[0] == "tweak" ? String(parts[2]) : file
     }
 }

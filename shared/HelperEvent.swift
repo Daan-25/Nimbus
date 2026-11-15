@@ -32,6 +32,10 @@ struct HelperEvent: Decodable, Sendable {
     var local: [PhoneApp]?
     /// The lowest iOS version an inspected IPA runs on.
     var minimumOs: String?
+    /// File names of tweaks that were taken in.
+    var files: [String]?
+    /// Tweaks in a package that can't be used, and why.
+    var refused: [RefusedTweak]?
 
     static func decode(_ line: String) -> HelperEvent? {
         let decoder = JSONDecoder()
@@ -63,6 +67,11 @@ struct PhoneApp: Decodable, Hashable, Sendable {
     let bundleID: String
     let name: String
     let expiresAt: String?
+}
+
+struct RefusedTweak: Decodable, Hashable, Sendable {
+    let name: String
+    let reason: String
 }
 
 struct TrustedNumber: Decodable, Hashable, Identifiable, Sendable {

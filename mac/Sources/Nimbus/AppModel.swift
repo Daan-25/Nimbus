@@ -469,20 +469,28 @@ final class AppModel {
 
     // MARK: Tweaks
 
-    /// Adds a tweak to an app. It goes in when the app is signed next, at its next refresh.
+    /// Adds a tweak to an app: a .dylib, or the tweaks in a .deb package. It goes in when the
+    /// app is signed next, at its next refresh.
     func addTweak(_ url: URL, to app: LibraryApp) {
-        guard !isBusy, let index = library.firstIndex(where: { $0.id == app.id }) else { return }
+        guard !isBusy, library.contains(where: { $0.id == app.id }) else { return }
         Task {
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             do {
-                _ = try await Helper.runOnce(["check-tweak", url.path])
-                let file = "tweak-\(UUID().uuidString.prefix(8))-\(url.lastPathComponent)"
-                try FileManager.default.copyItem(at: url, to: Library.ipaFolder.appendingPathComponent(file))
-                guard library.indices.contains(index), library[index].id == app.id else { return }
-                library[index].tweaks = (library[index].tweaks ?? []) + [file]
+                let prefix = "tweak-\(UUID().uuidString.prefix(8))-"
+                let result = try await Helper.runOnce(["import-tweak", url.path, Library.ipaFolder.path, prefix])
+                let files = result.files ?? []
+                guard let index = library.firstIndex(where: { $0.id == app.id }) else {
+                    files.forEach(Library.deleteIPA)
+                    return
+                }
+                library[index].tweaks = (library[index].tweaks ?? []) + files
                 phase = .done
-                status = "\(url.lastPathComponent) goes into \(app.name) at its next refresh."
+                let names = files.map(LibraryApp.tweakName).joined(separator: ", ")
+                status = "\(names) goes into \(app.name) at its next refresh."
+                if let refused = result.refused, !refused.isEmpty {
+                    status += " Left out: " + refused.map { "\($0.name) (\($0.reason))" }.joined(separator: "; ")
+                }
             } catch {
                 fail("\(url.lastPathComponent) can't be added: \(error.localizedDescription)")
             }

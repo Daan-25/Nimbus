@@ -282,6 +282,51 @@ final class PhoneModel {
         localLibrary.contains { $0.ipaFile == app.ipaFile }
     }
 
+    // MARK: Tweaks
+
+    /// Adds a tweak to an app this device installed: a .dylib, or the tweaks in a .deb package.
+    /// It goes in when the app is signed next, at its next refresh. Apps the Mac installed get
+    /// their tweaks from the Mac, which would overwrite changes made here.
+    func addTweak(_ url: URL, to app: LibraryApp) {
+        guard !isBusy, isLocal(app) else { return }
+        let access = url.startAccessingSecurityScopedResource()
+        Task {
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            try? FileManager.default.createDirectory(at: Library.ipaFolder, withIntermediateDirectories: true)
+            do {
+                // local- keeps the Mac from removing them when it copies its apps over.
+                let prefix = "local-tweak-\(UUID().uuidString.prefix(8))-"
+                let result = try await Engine.runOnce("import-tweak", args: [url.path, Library.ipaFolder.path, prefix])
+                let files = result.files ?? []
+                guard let index = localLibrary.firstIndex(where: { $0.ipaFile == app.ipaFile }) else {
+                    files.forEach(Library.deleteIPA)
+                    return
+                }
+                localLibrary[index].tweaks = (localLibrary[index].tweaks ?? []) + files
+                phase = .done
+                status = "\(files.map(LibraryApp.tweakName).joined(separator: ", ")) goes into \(app.name) at its next refresh."
+                if let refused = result.refused, !refused.isEmpty {
+                    status += " Left out: " + refused.map { "\($0.name) (\($0.reason))" }.joined(separator: "; ")
+                }
+            } catch {
+                fail("\(url.lastPathComponent) can't be added: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Takes a tweak off an app this device installed. It's gone after the app's next refresh.
+    func removeTweak(_ file: String, from app: LibraryApp) {
+        guard let index = localLibrary.firstIndex(where: { $0.ipaFile == app.ipaFile }) else { return }
+        localLibrary[index].tweaks?.removeAll { $0 == file }
+        if localLibrary[index].tweaks?.isEmpty == true { localLibrary[index].tweaks = nil }
+        Library.deleteIPA(file)
+    }
+
+    /// The app as Nimbus knows it now, for a view that holds an older copy.
+    func current(_ app: LibraryApp) -> LibraryApp {
+        knownApps.first { $0.bundleID == app.bundleID } ?? app
+    }
+
     /// Apps on this device signed by this Apple ID; nil when that isn't known yet.
     var usedAppSlots: Int? {
         guard let teamID, let deviceApps else { return nil }
@@ -668,7 +713,10 @@ final class PhoneModel {
         Task {
             do {
                 _ = try await Engine.runOnce("uninstall", args: [device.udid, bundleID])
-                for app in localLibrary where app.bundleID == bundleID { Library.deleteIPA(app.ipaFile) }
+                for app in localLibrary where app.bundleID == bundleID {
+                    Library.deleteIPA(app.ipaFile)
+                    app.tweaks?.forEach(Library.deleteIPA)
+                }
                 localLibrary.removeAll { $0.bundleID == bundleID }
                 refreshedUntil[bundleID] = nil
                 phase = .done

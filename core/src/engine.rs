@@ -100,6 +100,16 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
             io::emit(json!({ "event": "tweak", "name": id }));
             Ok(())
         }
+        "import-tweak" => {
+            let (files, refused) =
+                crate::tweaks::import(Path::new(arg(0)?), Path::new(arg(1)?), arg(2)?)?;
+            let refused: Vec<_> = refused
+                .iter()
+                .map(|r| json!({ "name": r.name, "reason": r.reason }))
+                .collect();
+            io::emit(json!({ "event": "tweaks_imported", "files": files, "refused": refused }));
+            Ok(())
+        }
         "jit" => crate::jit::enable(arg(0)?, arg(1)?).await,
         "ddi" => ddi(arg(0)?, args.get(1).map(String::as_str)).await,
         #[cfg(target_os = "macos")]

@@ -19,6 +19,7 @@
 //!   nimbus-helper sync-phone UDID BUNDLE_ID    copies apps to Nimbus on the device; reads which from stdin
 //!   nimbus-helper pairing-file UDID PATH       saves a remote pairing file on this Mac
 //!   nimbus-helper crash-log UDID NAME          prints the device's newest crash report of an app
+//!   nimbus-helper import-tweak PATH FOLDER PREFIX   takes in a .dylib or .deb as tweaks kept in FOLDER
 //!   nimbus-helper check-tweak PATH             checks that a .dylib can work as a tweak
 //!   nimbus-helper inspect PATH                 prints what an .ipa file contains
 //!   nimbus-helper jit UDID BUNDLE_ID           starts an app with JIT enabled

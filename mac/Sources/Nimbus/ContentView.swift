@@ -427,7 +427,7 @@ private struct TweaksSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Tweaks for \(app?.name ?? "this app")")
                 .font(.title2.bold())
-            Text("A tweak is a library (.dylib) that the app loads when it starts. Nimbus builds tweaks into the app when it signs it, so they take effect at the next refresh and stay at every refresh after that. The app's own file isn't changed, so taking a tweak off undoes it.")
+            Text("A tweak is a library (.dylib) that the app loads when it starts. A .deb package works too: Nimbus takes the tweaks out of it. Nimbus builds tweaks into the app when it signs it, so they take effect at the next refresh and stay at every refresh after that. The app's own file isn't changed, so taking a tweak off undoes it.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -472,7 +472,7 @@ private struct TweaksSheet: View {
         }
         .padding(24)
         .frame(width: 480)
-        .fileImporter(isPresented: $choosing, allowedContentTypes: [UTType(filenameExtension: "dylib") ?? .data]) { result in
+        .fileImporter(isPresented: $choosing, allowedContentTypes: UTType.tweaks) { result in
             if case .success(let url) = result, let app { model.addTweak(url, to: app) }
         }
     }
@@ -499,5 +499,8 @@ private func confirmRemoval(of name: String) -> Bool {
 }
 
 extension UTType {
+    /// Tweaks: a .dylib, or a .deb package with tweaks in it.
+    static let tweaks = [UTType(filenameExtension: "dylib"), UTType(filenameExtension: "deb")].compactMap { $0 }
+
     static let ipa = UTType(filenameExtension: "ipa") ?? .data
 }

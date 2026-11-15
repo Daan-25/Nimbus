@@ -252,6 +252,144 @@ pub fn add(app: &Path, tweaks: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
+/// A tweak that was found but can't be used, and why.
+pub struct Refused {
+    pub name: String,
+    pub reason: String,
+}
+
+/// Takes in a tweak to keep beside the apps: a .dylib, or the .dylib files in a .deb package.
+/// Each usable one is copied into `folder` as `prefix` + its name. Returns the file names and
+/// the ones that were refused; fails when none can be used.
+pub fn import(source: &Path, folder: &Path, prefix: &str) -> Result<(Vec<String>, Vec<Refused>)> {
+    let extension = source
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    let candidates: Vec<(String, Vec<u8>)> = match extension.as_str() {
+        "dylib" => vec![(
+            source
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            std::fs::read(source).with_context(|| format!("Can't read {}", source.display()))?,
+        )],
+        "deb" => dylibs_in_deb(source)?,
+        _ => bail!("A tweak has to be a .dylib file or a .deb package."),
+    };
+    if candidates.is_empty() {
+        bail!("This package has no tweak libraries in it.");
+    }
+
+    let scratch = std::env::temp_dir().join(format!("nimbus-tweak-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch)?;
+    let mut files = Vec::new();
+    let mut refused = Vec::new();
+    for (name, data) in candidates {
+        let checked = scratch.join(&name);
+        std::fs::write(&checked, &data)?;
+        match check(&checked) {
+            Ok(_) => {
+                let file = format!("{prefix}{name}");
+                std::fs::copy(&checked, folder.join(&file))?;
+                files.push(file);
+            }
+            Err(error) => refused.push(Refused {
+                name,
+                reason: error.to_string(),
+            }),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+
+    if files.is_empty() {
+        let reason = refused
+            .first()
+            .map(|r| r.reason.clone())
+            .unwrap_or_else(|| "It has no usable tweak.".to_string());
+        bail!("{reason}");
+    }
+    Ok((files, refused))
+}
+
+/// The .dylib files a .deb package installs where tweak loaders look for them, by file name.
+fn dylibs_in_deb(path: &Path) -> Result<Vec<(String, Vec<u8>)>> {
+    use std::io::Read;
+
+    let file =
+        std::fs::File::open(path).with_context(|| format!("Can't read {}", path.display()))?;
+    let mut package = ar::Archive::new(file);
+    while let Some(entry) = package.next_entry() {
+        let mut entry = entry.map_err(|_| anyhow!("This isn't a valid .deb package."))?;
+        let name = String::from_utf8_lossy(entry.header().identifier()).into_owned();
+        let Some(compression) = name.strip_prefix("data.tar") else {
+            continue;
+        };
+        let mut packed = Vec::new();
+        entry.read_to_end(&mut packed)?;
+        let unpacked = match compression.trim_end_matches('/') {
+            "" => packed,
+            ".gz" => {
+                let mut out = Vec::new();
+                flate2::read::GzDecoder::new(&packed[..]).read_to_end(&mut out)?;
+                out
+            }
+            ".xz" => {
+                let mut out = Vec::new();
+                lzma_rs::xz_decompress(&mut &packed[..], &mut out)
+                    .map_err(|e| anyhow!("Couldn't unpack the package: {e}"))?;
+                out
+            }
+            ".lzma" => {
+                let mut out = Vec::new();
+                lzma_rs::lzma_decompress(&mut &packed[..], &mut out)
+                    .map_err(|e| anyhow!("Couldn't unpack the package: {e}"))?;
+                out
+            }
+            ".zst" => {
+                let mut out = Vec::new();
+                ruzstd::decoding::StreamingDecoder::new(&packed[..])
+                    .map_err(|e| anyhow!("Couldn't unpack the package: {e}"))?
+                    .read_to_end(&mut out)?;
+                out
+            }
+            other => bail!("Nimbus can't unpack packages compressed as {other}."),
+        };
+        return tweak_libraries(&unpacked);
+    }
+    bail!("This isn't a valid .deb package: it has no contents.")
+}
+
+/// The .dylib files in a package's contents that a tweak loader would load: those in a
+/// DynamicLibraries or TweakInject folder, rootful or rootless.
+fn tweak_libraries(contents: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+    use std::io::Read;
+
+    let mut found = Vec::new();
+    let mut archive = tar::Archive::new(contents);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry.path()?.to_string_lossy().into_owned();
+        let in_tweak_folder = ["MobileSubstrate/DynamicLibraries/", "usr/lib/TweakInject/"]
+            .iter()
+            .any(|folder| path.contains(folder));
+        let Some(name) = path.rsplit('/').next().map(str::to_string) else {
+            continue;
+        };
+        if in_tweak_folder && name.ends_with(".dylib") {
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data)?;
+            found.push((name, data));
+        }
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

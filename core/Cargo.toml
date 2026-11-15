@@ -25,6 +25,12 @@ plist = "1.8"
 sha2 = "0.10"
 hex = "0.4"
 zip = { version = "8", default-features = false, features = ["deflate"] }
+# Reading .deb packages, for tweaks. All pure Rust, so they build for iOS as they are.
+ar = "0.9"
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
+lzma-rs = "0.3"
+ruzstd = "0.9"
 
 # Setting up the iPhone app is something only the Mac does.
 [target.'cfg(target_os = "macos")'.dependencies]
