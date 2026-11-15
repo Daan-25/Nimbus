@@ -24,6 +24,10 @@ It's an alternative to AltStore and SideStore, built to remove the parts that ge
 - **Tweaks.** Add a library (.dylib) or a .deb package to an app, and Nimbus builds it in every time it signs the app. Useful to
   fix an old app or to extend one. Nimbus refuses tweaks that need a jailbreak, but doesn't check what a tweak
   does, so only add ones you trust.
+- **Teleport.** On the iPhone, pick a place on a map and the whole device reports it, in every app, without a
+  computer or a jailbreak. Nimbus holds the place through the developer service Xcode uses to test locations, which
+  lasts while Nimbus runs: it keeps running in the background with the location arrow on, and the device is back on
+  its real location when you close Nimbus or turn off LocalDevVPN. Some games block accounts that do this.
 - **No separate server.** No AltServer and no mail plug-in. One app does everything.
 - **Clear errors.** Common problems come with a plain explanation of what to do.
 - **Your password stays on your Mac.** It goes only to Apple, and the Keychain stores it only if you ask.

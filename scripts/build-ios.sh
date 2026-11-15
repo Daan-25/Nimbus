@@ -144,7 +144,9 @@ cat > "$APP/Info.plist" <<PLIST
     </array>
     <!-- Refreshing in the background; the identifier is BackgroundRefresh.taskID. -->
     <key>BGTaskSchedulerPermittedIdentifiers</key><array><string>io.github.daan-25.nimbus.refresh</string></array>
-    <key>UIBackgroundModes</key><array><string>processing</string></array>
+    <!-- location: while Teleport holds a place, Nimbus keeps running to hold the connection. -->
+    <key>UIBackgroundModes</key><array><string>processing</string><string>location</string></array>
+    <key>NSLocationWhenInUseUsageDescription</key><string>Teleport keeps Nimbus running in the background, so this device stays at the place you chose.</string>
     <key>NSLocalNetworkUsageDescription</key><string>Nimbus connects to this device through LocalDevVPN to install and refresh your apps.</string>
 </dict>
 </plist>

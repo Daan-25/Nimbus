@@ -23,4 +23,19 @@ void nimbus_reply(const char *json);
 // Stops the running command.
 void nimbus_cancel(void);
 
+// Moves the device to a place and keeps it there, apart from nimbus_run's commands. Returns
+// once the device is there. On failure, *error (when error isn't NULL) gets a message to free
+// with nimbus_free_string.
+bool nimbus_teleport(const char *udid, double latitude, double longitude, char **error);
+
+// Puts the device back on its real location.
+void nimbus_teleport_stop(void);
+
+// Whether the device is held at a place. Turns false when the connection is lost, which also
+// puts the device back on its real location.
+bool nimbus_teleport_active(void);
+
+// Frees a string the engine handed out.
+void nimbus_free_string(char *text);
+
 #endif

@@ -112,6 +112,7 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
             Ok(())
         }
         "jit" => crate::jit::enable(arg(0)?, arg(1)?).await,
+        "location" => crate::location::hold_until_stopped(arg(0)?, arg(1)?, arg(2)?).await,
         "ddi" => ddi(arg(0)?, args.get(1).map(String::as_str)).await,
         #[cfg(target_os = "macos")]
         "setup-phone" => {
@@ -121,6 +122,13 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
         "phone-status" => crate::setup::phone_status(arg(0)?, arg(1)?).await,
         #[cfg(target_os = "macos")]
         "sync-phone" => crate::setup::sync_phone(arg(0)?, arg(1)?).await,
+        #[cfg(target_os = "macos")]
+        "open" => {
+            let mut tunnel = device::tunnel_for(Some(arg(0)?)).await?;
+            let pid = tunnel.launch(arg(1)?, false).await?;
+            io::emit(json!({ "event": "opened", "pid": pid }));
+            Ok(())
+        }
         #[cfg(target_os = "macos")]
         "screenshot" => screenshot(arg(0)?, Path::new(arg(1)?)).await,
         #[cfg(target_os = "macos")]

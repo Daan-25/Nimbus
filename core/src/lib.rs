@@ -19,6 +19,7 @@ mod engine;
 pub mod ffi;
 pub mod io;
 mod jit;
+mod location;
 mod profiles;
 #[cfg(target_os = "macos")]
 mod setup;

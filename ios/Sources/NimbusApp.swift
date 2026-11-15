@@ -32,19 +32,19 @@ struct ContentView: View {
     @State private var tab = Tab.apps
 
     private enum Tab {
-        case apps, browse, settings
+        case apps, browse, teleport, settings
     }
 
     var body: some View {
         TabView(selection: $tab) {
             NavigationStack {
                 List {
-                    if !model.isConnected || model.error != nil { connectionSection }
+                    connectionSection
                     if !model.hasCredentials { accountHint }
-                    if !model.status.isEmpty { statusSection }
                     if model.isConnected || !model.refreshableApps.isEmpty { appsSection }
                     if !model.archivedApps.isEmpty { archiveSection }
                     if !model.otherApps.isEmpty { otherAppsSection }
+                    if !model.status.isEmpty { statusSection }
                 }
                 .navigationTitle("Nimbus")
                 .toolbar {
@@ -64,6 +64,10 @@ struct ContentView: View {
             BrowseView()
                 .tabItem { Label("Browse", systemImage: "shippingbox") }
                 .tag(Tab.browse)
+
+            TeleportView()
+                .tabItem { Label("Teleport", systemImage: "location.circle") }
+                .tag(Tab.teleport)
 
             NavigationStack {
                 List {

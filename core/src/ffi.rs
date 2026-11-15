@@ -151,6 +151,69 @@ pub extern "C" fn nimbus_run(
     succeeded
 }
 
+/// Runs a future on its own large-stack thread, as `nimbus_run` does, apart from commands.
+fn block_on<T: Send + 'static>(future: impl std::future::Future<Output = T> + Send + 'static) -> Option<T> {
+    std::thread::Builder::new()
+        .name("nimbus-teleport".to_string())
+        .stack_size(STACK_SIZE)
+        .spawn(move || runtime().block_on(future))
+        .ok()?
+        .join()
+        .ok()
+}
+
+/// Moves the device to a place and keeps it there, apart from the commands `nimbus_run`
+/// runs. Returns once the device is there. On failure, `error` (when not NULL) gets a message
+/// to free with `nimbus_free_string`.
+#[unsafe(no_mangle)]
+pub extern "C" fn nimbus_teleport(
+    udid: *const c_char,
+    latitude: f64,
+    longitude: f64,
+    error: *mut *mut c_char,
+) -> bool {
+    if udid.is_null() {
+        return false;
+    }
+    let Ok(udid) = unsafe { CStr::from_ptr(udid) }.to_str().map(str::to_string) else {
+        return false;
+    };
+    let result = block_on(async move { crate::location::teleport(&udid, latitude, longitude).await })
+        .unwrap_or_else(|| Err(anyhow!("Teleport crashed.")));
+    match result {
+        Ok(()) => true,
+        Err(e) => {
+            if !error.is_null()
+                && let Ok(text) = CString::new(format!("{e:#}"))
+            {
+                unsafe { *error = text.into_raw() };
+            }
+            false
+        }
+    }
+}
+
+/// Puts the device back on its real location.
+#[unsafe(no_mangle)]
+pub extern "C" fn nimbus_teleport_stop() {
+    block_on(crate::location::stop());
+}
+
+/// Whether the device is held at a place by `nimbus_teleport`. Turns false when the
+/// connection is lost, which also puts the device back on its real location.
+#[unsafe(no_mangle)]
+pub extern "C" fn nimbus_teleport_active() -> bool {
+    crate::location::is_active()
+}
+
+/// Frees a string the engine handed out.
+#[unsafe(no_mangle)]
+pub extern "C" fn nimbus_free_string(text: *mut c_char) {
+    if !text.is_null() {
+        drop(unsafe { CString::from_raw(text) });
+    }
+}
+
 /// Answers the prompt the running command is waiting on.
 #[unsafe(no_mangle)]
 pub extern "C" fn nimbus_reply(json: *const c_char) {
