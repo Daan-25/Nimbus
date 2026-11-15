@@ -61,6 +61,9 @@ final class AppModel {
     }
     /// Sideloaded apps on the selected device; nil until loaded.
     var deviceApps: [DeviceApp]?
+    /// Icons of apps by bundle ID, as the device shows them. Kept on disk, so an archived app
+    /// still has its icon.
+    var icons: [String: NSImage] = AppModel.loadIcons()
 
     var appIDsAvailable: Int? = UserDefaults.standard.object(forKey: "appIDsAvailable") as? Int {
         didSet { defaults.set(appIDsAvailable, forKey: "appIDsAvailable") }
@@ -288,6 +291,36 @@ final class AppModel {
         guard let udid = selectedUDID else { return }
         guard let event = try? await Helper.runOnce(["apps", udid]), selectedUDID == udid else { return }
         deviceApps = event.apps ?? []
+        await fetchMissingIcons(udid: udid)
+    }
+
+    private static func loadIcons() -> [String: NSImage] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: Library.iconsFolder, includingPropertiesForKeys: nil)) ?? []
+        var icons: [String: NSImage] = [:]
+        for file in files where file.pathExtension == "png" {
+            if let image = NSImage(contentsOf: file) {
+                icons[file.deletingPathExtension().lastPathComponent] = image
+            }
+        }
+        return icons
+    }
+
+    /// Asks the device for the icons of its apps that Nimbus doesn't have yet.
+    private func fetchMissingIcons(udid: String) async {
+        let missing = (deviceApps ?? []).map(\.bundleId).filter { icons[$0] == nil }
+        guard !missing.isEmpty,
+              let event = try? await Helper.runOnce(["icons", udid, Library.iconsFolder.path] + missing)
+        else { return }
+        for bundleID in event.files ?? [] {
+            let file = Library.iconsFolder.appendingPathComponent("\(bundleID).png")
+            if let image = NSImage(contentsOf: file) { icons[bundleID] = image }
+        }
+    }
+
+    /// Forgets an app's icon, so the next look at the device fetches the one it has now.
+    func forgetIcon(of bundleID: String) {
+        icons[bundleID] = nil
+        try? FileManager.default.removeItem(at: Library.iconsFolder.appendingPathComponent("\(bundleID).png"))
     }
 
     // MARK: Actions
@@ -646,6 +679,13 @@ final class AppModel {
         openAtLogin = SMAppService.mainApp.status == .enabled
     }
 
+    /// Clears the status line once the user has read it.
+    func dismissStatus() {
+        guard !isBusy else { return }
+        status = ""
+        phase = .idle
+    }
+
     func clearRateLimit() {
         rateLimitedUntil = nil
     }
@@ -993,6 +1033,8 @@ final class AppModel {
         }
         // Also after a refresh, so one click brings the app, its pairing file and its signing key up to date.
         if job.isPhoneApp || job.existing.map(isPhoneApp) == true { phoneAppToSetUp = bundleID }
+        // A new version may have a new icon; the next look at the device fetches it.
+        if job.existing?.version != event.version { forgetIcon(of: bundleID) }
         let expires = event.expires.flatMap { try? Date($0, strategy: .iso8601) }
         let app = LibraryApp(
             bundleID: bundleID,

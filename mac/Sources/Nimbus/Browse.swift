@@ -29,19 +29,17 @@ struct BrowseView: View {
             } else {
                 list
             }
-            if !model.sources.isEmpty {
-                Divider()
-                HStack {
-                    Button("Add Source…", systemImage: "plus") { addingSource = true }
-                    Spacer()
-                    if model.isLoadingSources { ProgressView().controlSize(.small) }
-                    Button("Reload", systemImage: "arrow.clockwise") {
-                        Task { await model.reloadSources() }
-                    }
-                    .disabled(model.isLoadingSources)
+        }
+        .navigationTitle("Browse")
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button("Add Source", systemImage: "plus") { addingSource = true }
+                    .help("Add an AltStore source")
+                Button("Reload", systemImage: "arrow.clockwise") {
+                    Task { await model.reloadSources() }
                 }
-                .padding(.horizontal)
-                .padding(.vertical, 10)
+                .help("Load your sources again")
+                .disabled(model.isLoadingSources || model.sources.isEmpty)
             }
         }
         .searchable(text: $search, prompt: "Search apps")
@@ -197,19 +195,28 @@ struct SourceAppButton: View {
     }
 }
 
-/// An app's icon from the web, with a placeholder until it's loaded or when there is none.
+/// An app's icon: the one the device shows when Nimbus has it, else the one from the web,
+/// with a placeholder until it's loaded or when there is none.
 struct AppIcon: View {
+    @Environment(AppModel.self) private var model
     let url: URL?
+    var bundleID: String? = nil
     var size: CGFloat = 30
 
     var body: some View {
-        AsyncImage(url: url) { image in
-            image.resizable().scaledToFill()
-        } placeholder: {
-            Image(systemName: "app.fill")
-                .resizable()
-                .scaledToFit()
-                .foregroundStyle(.tint)
+        Group {
+            if let bundleID, let image = model.icons[bundleID] {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else {
+                AsyncImage(url: url) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Image(systemName: "app.fill")
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundStyle(.tint)
+                }
+            }
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.225, style: .continuous))

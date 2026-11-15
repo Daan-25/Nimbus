@@ -16,6 +16,9 @@ enum Library {
     /// Each app as it was signed, to put an archived app back without signing in.
     static let signedFolder = folder.appendingPathComponent("Signed", isDirectory: true)
 
+    /// Home-screen icons of apps, fetched from the device, as <bundle ID>.png.
+    static let iconsFolder = folder.appendingPathComponent("Icons", isDirectory: true)
+
     static let ipaFolder: URL = {
         let url = folder.appendingPathComponent("IPAs", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

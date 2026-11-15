@@ -27,6 +27,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/build/icons/Nimbus.icns" "$APP/Contents/Resources/Nimbus.icns"
 cp "$SWIFT_BIN/Nimbus" "$APP/Contents/MacOS/Nimbus"
+# SwiftPM records the deployment target as the SDK version too. macOS reads that number to
+# decide how an app looks, and would show Nimbus in the old style, without Liquid Glass. So
+# it gets the SDK it was really built with.
+xcrun vtool -set-build-version macos "$(sed -n 's/.*\.macOS(\.v\([0-9]*\)).*/\1/p' "$ROOT/mac/Package.swift").0" \
+    "$(xcrun --sdk macosx --show-sdk-version)" -replace -output "$APP/Contents/MacOS/Nimbus" "$APP/Contents/MacOS/Nimbus" 2> /dev/null
 cp "$ROOT/core/target/release/nimbus-helper" "$APP/Contents/MacOS/nimbus-helper"
 # The debugging tables name every source file with its full path, user name included.
 strip -S -x "$APP/Contents/MacOS/Nimbus" "$APP/Contents/MacOS/nimbus-helper" 2> /dev/null

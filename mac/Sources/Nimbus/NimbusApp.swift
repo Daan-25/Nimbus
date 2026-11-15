@@ -8,9 +8,15 @@ struct NimbusApp: App {
         Window("Nimbus", id: "main") {
             ContentView()
                 .environment(model)
-                .frame(minWidth: 540, minHeight: 680)
+                .frame(minWidth: 780, minHeight: 540)
         }
         .windowResizability(.contentMinSize)
+        .windowToolbarStyle(.unified)
+
+        Settings {
+            SettingsView()
+                .environment(model)
+        }
 
         // Keeps Nimbus running after the window closes, so it can refresh apps in the background.
         MenuBarExtra {
@@ -70,6 +76,10 @@ private struct MenuBarContent: View {
         Button("Refresh All Apps") { model.refreshAll() }
             .disabled(model.isBusy || model.libraryAppsOnDevice.isEmpty || !model.hasCredentials || model.isRateLimited)
         Divider()
+        SettingsLink {
+            Text("Settings…")
+        }
+        .keyboardShortcut(",")
         Button("Open Nimbus") {
             openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)

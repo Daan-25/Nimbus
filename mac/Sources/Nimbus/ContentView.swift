@@ -5,33 +5,56 @@ struct ContentView: View {
     @Environment(AppModel.self) private var model
     @State private var showLog = false
     @State private var choosingIPA = false
-    @State private var dropTargeted = false
-    @State private var tab = Tab.myApps
+    @State private var page: Page? = .myApps
 
-    private enum Tab {
+    enum Page: Hashable {
         case myApps, browse
     }
 
     var body: some View {
-        @Bindable var model = model
-
-        VStack(spacing: 0) {
-            switch tab {
-            case .myApps: myApps
-            case .browse: BrowseView()
+        NavigationSplitView {
+            List(selection: $page) {
+                Section("Library") {
+                    NavigationLink(value: Page.myApps) {
+                        Label("My Apps", systemImage: "square.grid.2x2")
+                    }
+                    .badge(model.libraryAppsOnDevice.count + model.otherAppsOnDevice.count)
+                    NavigationLink(value: Page.browse) {
+                        Label("Browse", systemImage: "shippingbox")
+                    }
+                }
+                Section("Device") {
+                    DeviceSummary()
+                }
             }
-            Divider()
-            footer
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
+        } detail: {
+            switch page ?? .myApps {
+            case .myApps:
+                MyAppsView(choosingIPA: $choosingIPA)
+            case .browse:
+                BrowseView()
+            }
         }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Picker("View", selection: $tab) {
-                    Text("My Apps").tag(Tab.myApps)
-                    Text("Browse").tag(Tab.browse)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+            ToolbarItem(placement: .navigation) {
+                DevicePicker()
             }
+            if page != .browse {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button("Add App", systemImage: "plus") { choosingIPA = true }
+                        .help("Install an .ipa file")
+                        .disabled(model.isBusy || model.selectedDevice == nil)
+                    Button("Refresh All", systemImage: "arrow.clockwise") { model.refreshAll() }
+                        .help("Refresh every app with one sign-in")
+                        .disabled(model.isBusy || model.libraryAppsOnDevice.isEmpty || model.isRateLimited || model.selectedDevice == nil)
+                }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            StatusBar(showLog: $showLog)
+                .padding(.bottom, 16)
+                .padding(.horizontal, 24)
         }
         .task { model.start() }
         .fileImporter(isPresented: $choosingIPA, allowedContentTypes: [.ipa]) { result in
@@ -54,16 +77,124 @@ struct ContentView: View {
             LogSheet(lines: model.log)
         }
     }
+}
 
-    private var myApps: some View {
-        Form {
-            accountSection
-            deviceSection
-            appsSection
-            if model.isRateLimited { rateLimitSection }
-            settingsSection
+// MARK: Device
+
+/// Chooses the device to work with, in the toolbar.
+private struct DevicePicker: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        if model.devices.isEmpty {
+            Label("No device", systemImage: "iphone.slash")
+                .foregroundStyle(.secondary)
+                .help("Connect your iPhone or iPad with a cable and unlock it.")
+        } else {
+            // A menu instead of a picker: in the toolbar a picker shows only the icon, not the name.
+            Menu {
+                Picker("Device", selection: $model.selectedUDID) {
+                    ForEach(model.devices) { device in
+                        Label(device.name, systemImage: icon(of: device))
+                            .tag(Optional(device.udid))
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                if let device = model.selectedDevice {
+                    Label(device.name, systemImage: icon(of: device))
+                        .labelStyle(.titleAndIcon)
+                } else {
+                    Label("Choose a device", systemImage: "iphone")
+                        .labelStyle(.titleAndIcon)
+                }
+            }
+            .fixedSize()
+            .help("The device Nimbus works with")
         }
-        .formStyle(.grouped)
+    }
+
+    private func icon(of device: Device) -> String {
+        device.connection == "usb" ? "cable.connector" : "wifi"
+    }
+}
+
+/// The device's limits at a glance, in the sidebar.
+private struct DeviceSummary: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if let device = model.selectedDevice {
+            VStack(alignment: .leading, spacing: 10) {
+                Label {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(device.name)
+                            .lineLimit(1)
+                        Text(device.connection == "usb" ? "Connected by cable" : "Connected over Wi-Fi")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "iphone")
+                }
+                if let used = model.usedAppSlots {
+                    meter("App slots", value: used, of: AppModel.freeAppSlots, label: "\(used) of \(AppModel.freeAppSlots)",
+                          warn: used >= AppModel.freeAppSlots)
+                        .help("A free Apple ID can have \(AppModel.freeAppSlots) sideloaded apps on a device at once, other tools included. Archive an app to free a slot.")
+                }
+                if let available = model.appIDsAvailable, let max = model.appIDsMax {
+                    meter("App IDs left", value: available, of: max, label: "\(available) of \(max)", warn: available <= 1)
+                        .help("Every new app uses an app ID. A free Apple ID can create \(max) a week. Refreshing doesn't use new ones.")
+                }
+            }
+            .padding(.vertical, 4)
+        } else {
+            Label("Connect your iPhone or iPad with a cable and unlock it.", systemImage: "cable.connector")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func meter(_ title: String, value: Int, of total: Int, label: String, warn: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(label)
+                    .monospacedDigit()
+                    .foregroundStyle(warn ? .orange : .secondary)
+            }
+            .font(.caption)
+            ProgressView(value: Double(min(value, total)), total: Double(max(total, 1)))
+                .tint(warn ? .orange : .accentColor)
+        }
+    }
+}
+
+// MARK: My apps
+
+private struct MyAppsView: View {
+    @Environment(AppModel.self) private var model
+    @Binding var choosingIPA: Bool
+    @State private var dropTargeted = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                if !model.hasCredentials { signInCard }
+                if model.isRateLimited { rateLimitCard }
+                if model.selectedDevice == nil { noDeviceCard }
+                appsSection
+                if model.canInstallPhoneApp { phoneAppCard }
+            }
+            .padding(24)
+            // Room for the status bar, which floats over the bottom.
+            .padding(.bottom, 64)
+            .frame(maxWidth: 820)
+            .frame(maxWidth: .infinity)
+        }
+        .navigationTitle("My Apps")
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first(where: { $0.pathExtension.lowercased() == "ipa" }) else { return false }
             model.add(url)
@@ -71,154 +202,145 @@ struct ContentView: View {
         } isTargeted: { dropTargeted = $0 }
         .overlay {
             if dropTargeted {
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
-                    .padding(6)
+                    .padding(10)
                     .allowsHitTesting(false)
             }
         }
     }
 
-    // MARK: Sections
-
-    private var accountSection: some View {
-        @Bindable var model = model
-        return Section {
-            TextField("Apple ID", text: $model.appleID)
-                .textContentType(.username)
-            SecureField("Password", text: $model.password)
-                .textContentType(.password)
-            Toggle("Remember password in Keychain", isOn: $model.rememberPassword)
-        } header: {
-            Text("Account")
-        } footer: {
-            if !model.identity.isEmpty {
-                Label("Signs in as this Mac, so accounts with Advanced Data Protection work.", systemImage: "lock.shield")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .help(model.identity)
-            }
-        }
-    }
-
-    private var deviceSection: some View {
-        @Bindable var model = model
-        return Section("Device") {
-            if model.devices.isEmpty {
-                Label("Connect your iPhone or iPad with a cable and unlock it.", systemImage: "cable.connector")
-                    .foregroundStyle(.secondary)
-            } else {
-                Picker("Device", selection: $model.selectedUDID) {
-                    ForEach(model.devices) { device in
-                        Text("\(device.name) · \(device.connection == "usb" ? "USB" : "Wi-Fi")")
-                            .tag(Optional(device.udid))
-                    }
-                }
-                if let used = model.usedAppSlots {
-                    LabeledContent("App slots") {
-                        Text("\(used) of \(AppModel.freeAppSlots) used")
-                            .foregroundStyle(used >= AppModel.freeAppSlots ? .orange : .secondary)
-                    }
-                    .help("A free Apple ID can have \(AppModel.freeAppSlots) sideloaded apps on a device at once, AltStore and other tools included.")
-                }
-                if let available = model.appIDsAvailable, let max = model.appIDsMax {
-                    LabeledContent("App IDs this week") {
-                        Text("\(available) of \(max) left")
-                            .foregroundStyle(available <= 1 ? .orange : .secondary)
-                    }
-                    .help("Every new app uses an app ID. A free Apple ID can create \(max) a week. Refreshing doesn't use new ones.")
-                }
-            }
-        }
-    }
-
     private var appsSection: some View {
-        Section {
-            if model.libraryAppsOnDevice.isEmpty && model.otherAppsOnDevice.isEmpty {
-                Text("Find an app under Browse, add an .ipa file with the button below, or drop one on this window.")
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(model.libraryAppsOnDevice) { app in
-                LibraryAppRow(app: app)
-            }
-            ForEach(model.otherAppsOnDevice) { app in
-                OtherAppRow(app: app)
-            }
-            if model.canInstallPhoneApp {
-                HStack(spacing: 12) {
-                    Image(systemName: "iphone.and.arrow.forward.inward")
-                        .font(.title2)
-                        .foregroundStyle(.tint)
-                        .frame(width: 30)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Nimbus for \(model.selectedDevice?.name ?? "your device")")
-                        Text("Install and refresh apps on the device itself, without this Mac. Uses one app slot.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Install") { model.installPhoneApp() }
-                        .disabled(model.isBusy || model.isRateLimited)
-                }
-            }
-            HStack {
-                Button("Add App…", systemImage: "plus") { choosingIPA = true }
-                Spacer()
-                Button("Refresh All", systemImage: "arrow.clockwise") { model.refreshAll() }
-                    .disabled(model.libraryAppsOnDevice.isEmpty || model.isRateLimited)
-            }
-            .disabled(model.isBusy || model.selectedDevice == nil)
-        } header: {
-            Text("Apps")
-        }
-    }
-
-    private var rateLimitSection: some View {
-        Section {
-            Label {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Apple is limiting sign-ins")
-                        .font(.headline)
-                    if let until = model.rateLimitedUntil {
-                        Text("Trying again before \(until.formatted(date: .omitted, time: .shortened)) would only extend the block.")
-                            .foregroundStyle(.secondary)
-                    }
-                    Button("Try anyway") { model.clearRateLimit() }
-                        .buttonStyle(.link)
-                }
-            } icon: {
-                Image(systemName: "hourglass").foregroundStyle(.orange)
-            }
-        }
-    }
-
-    private var settingsSection: some View {
-        @Bindable var model = model
-        return Section {
-            Toggle("Refresh apps automatically", isOn: $model.autoRefresh)
-            Toggle("Open Nimbus at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
-        } header: {
-            Text("Automatic refresh")
-        } footer: {
-            Text(model.rememberPassword
-                 ? "Nimbus refreshes your apps two days before they expire, while it's running and your device is connected. Over Wi-Fi, too, if you turned on \"Show this iPhone when on Wi-Fi\" in Finder."
-                 : "Turn on \"Remember password in Keychain\" so Nimbus can refresh on its own.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: Footer
-
-    private var footer: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if !model.status.isEmpty {
-                HStack(alignment: .top, spacing: 8) {
-                    statusIcon
+            CardHeading("Apps", detail: model.nextExpiry.map { "Next expires \($0.formatted(.relative(presentation: .named)))" })
+            if model.libraryAppsOnDevice.isEmpty && model.otherAppsOnDevice.isEmpty {
+                ContentUnavailableView {
+                    Label("No Apps Yet", systemImage: "square.grid.2x2")
+                } description: {
+                    Text("Find an app under Browse, add an .ipa file with the + button, or drop one on this window.")
+                } actions: {
+                    Button("Add App…") { choosingIPA = true }
+                        .glassButton(prominent: true)
+                        .disabled(model.isBusy || model.selectedDevice == nil)
+                }
+                .padding(.vertical, 20)
+                .frame(maxWidth: .infinity)
+                .glassCard()
+            } else {
+                VStack(spacing: 0) {
+                    let apps = model.libraryAppsOnDevice
+                    ForEach(Array(apps.enumerated()), id: \.element.id) { index, app in
+                        LibraryAppRow(app: app)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                        if index < apps.count - 1 || !model.otherAppsOnDevice.isEmpty {
+                            Divider().padding(.leading, 70)
+                        }
+                    }
+                    let others = model.otherAppsOnDevice
+                    ForEach(Array(others.enumerated()), id: \.element.id) { index, app in
+                        OtherAppRow(app: app)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                        if index < others.count - 1 {
+                            Divider().padding(.leading, 70)
+                        }
+                    }
+                }
+                .glassCard()
+            }
+        }
+    }
+
+    private var signInCard: some View {
+        card(symbol: "person.crop.circle.badge.exclamationmark", tint: .accentColor,
+             title: "Sign in with your Apple ID",
+             text: "Nimbus needs it to install and refresh apps. It signs in as this Mac, so accounts with Advanced Data Protection work.") {
+            SettingsLink {
+                Text("Open Settings…")
+            }
+            .glassButton(prominent: true)
+        }
+    }
+
+    private var rateLimitCard: some View {
+        card(symbol: "hourglass", tint: .orange,
+             title: "Apple is limiting sign-ins",
+             text: model.rateLimitedUntil.map { "Trying again before \($0.formatted(date: .omitted, time: .shortened)) would only extend the block." } ?? "") {
+            Button("Try Anyway") { model.clearRateLimit() }
+                .glassButton()
+        }
+    }
+
+    private var noDeviceCard: some View {
+        card(symbol: "cable.connector", tint: .secondary,
+             title: "Connect your iPhone or iPad",
+             text: "Use a cable and unlock it. After the first time, Wi-Fi works too, if you turned on \"Show this iPhone when on Wi-Fi\" in Finder.") {
+            EmptyView()
+        }
+    }
+
+    private var phoneAppCard: some View {
+        card(symbol: "iphone.and.arrow.forward.inward", tint: .accentColor,
+             title: "Nimbus for \(model.selectedDevice?.name ?? "your device")",
+             text: "Install and refresh apps on the device itself, without this Mac. Uses one app slot.") {
+            Button("Install") { model.installPhoneApp() }
+                .glassButton(prominent: true)
+                .disabled(model.isBusy || model.isRateLimited)
+        }
+    }
+
+    private func card(symbol: String, tint: Color, title: String, text: String,
+                      @ViewBuilder action: () -> some View) -> some View {
+        HStack(spacing: 16) {
+            Image(systemName: symbol)
+                .font(.system(size: 26))
+                .foregroundStyle(tint)
+                .frame(width: 40)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline)
+                Text(text)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            action()
+        }
+        .padding(18)
+        .glassCard()
+    }
+}
+
+// MARK: Status
+
+/// What Nimbus is doing, floating over the bottom of the window while there's something to say.
+private struct StatusBar: View {
+    @Environment(AppModel.self) private var model
+    @Binding var showLog: Bool
+
+    var body: some View {
+        if !model.status.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .center, spacing: 10) {
+                    icon
                     Text(model.status)
+                        .lineLimit(3)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
-                    Spacer()
+                    Spacer(minLength: 8)
+                    if !model.log.isEmpty {
+                        Button("Log") { showLog = true }
+                            .glassButton()
+                    }
+                    if model.isBusy {
+                        Button("Cancel", role: .cancel) { model.cancel() }
+                            .glassButton()
+                    } else {
+                        Button("Dismiss", systemImage: "xmark") { model.dismissStatus() }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                    }
                 }
                 if model.isBusy {
                     if let progress = model.progress {
@@ -228,25 +350,86 @@ struct ContentView: View {
                     }
                 }
             }
-            HStack {
-                Button("Log") { showLog = true }
-                    .disabled(model.log.isEmpty)
-                Spacer()
-                if model.isBusy {
-                    Button("Cancel", role: .cancel) { model.cancel() }
-                }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+            .frame(maxWidth: 680)
+            .glassCard(cornerRadius: 22)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            // A finished job clears itself after a while; a failure stays until dismissed.
+            .task(id: model.status) {
+                guard model.phase == .done else { return }
+                try? await Task.sleep(for: .seconds(8))
+                if model.phase == .done { model.dismissStatus() }
             }
         }
-        .padding()
     }
 
-    @ViewBuilder private var statusIcon: some View {
+    @ViewBuilder private var icon: some View {
         switch model.phase {
         case .working: ProgressView().controlSize(.small)
         case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
         case .idle: Image(systemName: "info.circle").foregroundStyle(.secondary)
         }
+    }
+}
+
+// MARK: Settings
+
+/// Nimbus's settings window (⌘,): the account and automatic refresh.
+struct SettingsView: View {
+    var body: some View {
+        TabView {
+            AccountSettings()
+                .tabItem { Label("Account", systemImage: "person.crop.circle") }
+            RefreshSettings()
+                .tabItem { Label("Refresh", systemImage: "arrow.clockwise") }
+        }
+        .frame(width: 480)
+    }
+}
+
+private struct AccountSettings: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        Form {
+            Section {
+                TextField("Apple ID", text: $model.appleID)
+                    .textContentType(.username)
+                SecureField("Password", text: $model.password)
+                    .textContentType(.password)
+                Toggle("Remember password in Keychain", isOn: $model.rememberPassword)
+            } footer: {
+                Label("Your password goes only to Apple. Nimbus signs in as this Mac, so accounts with Advanced Data Protection work.", systemImage: "lock.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help(model.identity)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct RefreshSettings: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        Form {
+            Section {
+                Toggle("Refresh apps automatically", isOn: $model.autoRefresh)
+                Toggle("Open Nimbus at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
+            } footer: {
+                Text(model.rememberPassword
+                     ? "Nimbus refreshes your apps two days before they expire, while it's running and your device is connected. Over Wi-Fi, too, if you turned on \"Show this iPhone when on Wi-Fi\" in Finder."
+                     : "Turn on \"Remember password in Keychain\" under Account so Nimbus can refresh on its own.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
@@ -259,26 +442,31 @@ private struct LibraryAppRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AppIcon(url: app.iconURL)
-            VStack(alignment: .leading, spacing: 2) {
+            AppIcon(url: app.iconURL, bundleID: app.bundleID, size: 40)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(app.name)
+                    .font(.body.weight(.medium))
                 expiry
                     .font(.caption)
             }
             Spacer()
             if model.isArchived(app) {
                 Button("Restore") { model.restore(app) }
+                    .glassButton(prominent: true)
                     .disabled(model.isBusy)
             } else if let update = model.update(for: app) {
                 // Updating signs the app again, so it also refreshes it.
                 Button("Update") { model.install(update.app, from: update.source) }
+                    .glassButton(prominent: true)
                     .disabled(model.isBusy || model.isRateLimited)
                     .help(update.app.version.map { "Version \($0) is available." } ?? "A newer version is available.")
             } else if !model.isActive(app.bundleID) {
                 Button("Activate") { model.activate(bundleID: app.bundleID, name: app.name) }
+                    .glassButton()
                     .disabled(model.isBusy)
             } else {
                 Button("Refresh") { model.refresh([app]) }
+                    .glassButton()
                     .disabled(model.isBusy || model.isRateLimited)
             }
             Menu {
@@ -378,12 +566,17 @@ private struct OtherAppRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: managedUntil == nil ? "app.dashed" : "iphone")
-                .font(.title)
-                .foregroundStyle(.secondary)
-                .frame(width: 30)
-            VStack(alignment: .leading, spacing: 2) {
+            if model.icons[app.bundleId] != nil {
+                AppIcon(url: nil, bundleID: app.bundleId, size: 40)
+            } else {
+                Image(systemName: managedUntil == nil ? "app.dashed" : "iphone")
+                    .font(.system(size: 26))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 40, height: 40)
+            }
+            VStack(alignment: .leading, spacing: 3) {
                 Text(app.name)
+                    .font(.body.weight(.medium))
                 detail
                     .font(.caption)
             }

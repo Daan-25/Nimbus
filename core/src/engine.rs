@@ -74,6 +74,7 @@ async fn dispatch(command: &str, args: &[String]) -> Result<()> {
         "client-info" => print_client_info(),
         "devices" => list_devices().await,
         "apps" => list_apps(arg(0)?).await,
+        "icons" => save_icons(arg(0)?, Path::new(arg(1)?), args.get(2..).unwrap_or_default()).await,
         "uninstall" => uninstall(arg(0)?, arg(1)?).await,
         "install" => install().await,
         "diagnose" => device::diagnose().await,
@@ -210,6 +211,36 @@ async fn list_apps(udid: &str) -> Result<()> {
     }
     list.sort_by_key(|a| a["name"].as_str().unwrap_or_default().to_lowercase());
     io::emit(json!({ "event": "apps", "apps": list }));
+    Ok(())
+}
+
+/// Saves the home-screen icons of apps on the device as <bundle ID>.png in `folder`. An icon
+/// that can't be read is left out; the event lists the ones that were saved.
+async fn save_icons(udid: &str, folder: &Path, bundle_ids: &[String]) -> Result<()> {
+    let mut link = device::link_for(Some(udid)).await?;
+    let mut springboard = link
+        .springboard()
+        .await
+        .map_err(|e| anyhow!("Can't read the icons on your device: {e}"))?;
+    std::fs::create_dir_all(folder)?;
+    let mut saved = Vec::new();
+    for bundle_id in bundle_ids {
+        // A bundle ID is a file name here, so it may not climb out of the folder.
+        if bundle_id.contains('/') || bundle_id.starts_with('.') {
+            continue;
+        }
+        match springboard.get_icon_pngdata(bundle_id.clone()).await {
+            Ok(png) if !png.is_empty() => {
+                let file = folder.join(format!("{bundle_id}.png"));
+                let partial = folder.join(format!("{bundle_id}.png.partial"));
+                if std::fs::write(&partial, &png).and_then(|_| std::fs::rename(&partial, &file)).is_ok() {
+                    saved.push(bundle_id.clone());
+                }
+            }
+            _ => tracing::debug!("no icon for {bundle_id}"),
+        }
+    }
+    io::emit(json!({ "event": "icons", "files": saved }));
     Ok(())
 }
 

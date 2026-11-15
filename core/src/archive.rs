@@ -58,7 +58,11 @@ pub async fn backup_with(link: &mut Link, bundle_id: &str, folder: &Path) -> Res
     let mut data = container(link, bundle_id).await?;
     // Into a folder beside the real one first, so a copy that fails halfway doesn't replace
     // a good one.
-    let partial = folder.with_extension("partial");
+    // Not with_extension: a bundle ID's last part would be swapped out, so two apps that differ
+    // only there would share one draft folder.
+    let mut partial = folder.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = std::path::PathBuf::from(partial);
     let _ = std::fs::remove_dir_all(&partial);
     std::fs::create_dir_all(&partial)?;
 

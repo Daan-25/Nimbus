@@ -21,6 +21,7 @@ use idevice::{
         RemotePairingClient, RpPairingFile, RpPairingSocket, connect_tls_psk_tunnel_native,
     },
     rsd::RsdHandshake,
+    springboardservices::SpringBoardServicesClient,
     tcp::{adapter::Adapter, handle::AdapterHandle},
     usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdConnection, UsbmuxdDevice},
 };
@@ -99,6 +100,17 @@ impl Link {
             Link::Usb(provider) => HouseArrestClient::connect(provider).await,
             Link::Tunnel(tunnel) => {
                 HouseArrestClient::connect_rsd(&mut tunnel.adapter, &mut tunnel.services).await
+            }
+        }
+    }
+
+    /// The home screen's service, which hands out app icons.
+    pub async fn springboard(&mut self) -> Result<SpringBoardServicesClient, IdeviceError> {
+        match self {
+            Link::Usb(provider) => SpringBoardServicesClient::connect(provider).await,
+            Link::Tunnel(tunnel) => {
+                SpringBoardServicesClient::connect_rsd(&mut tunnel.adapter, &mut tunnel.services)
+                    .await
             }
         }
     }
