@@ -204,7 +204,7 @@ private struct MyAppsView: View {
             .frame(maxWidth: 820)
             .frame(maxWidth: .infinity)
         }
-        .background(Palette.sky)
+        .background(SkyBackground())
         .navigationTitle("My Apps")
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first(where: { $0.pathExtension.lowercased() == "ipa" }) else { return false }

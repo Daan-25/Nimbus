@@ -101,7 +101,7 @@ struct BrowseView: View {
         }
         .listStyle(.inset)
         .scrollContentBackground(.hidden)
-        .background(Palette.sky)
+        .background(SkyBackground())
     }
 }
 

@@ -533,7 +533,7 @@ extension View {
     /// The sky's colour behind a list, with its rows on cards.
     func skyBackground() -> some View {
         scrollContentBackground(.hidden)
-            .background(Palette.sky)
+            .background(SkyBackground())
     }
 }
 

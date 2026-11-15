@@ -7,9 +7,51 @@ import AppKit
 
 // MARK: Palette
 
-/// Nimbus's colours: warm paper by day, a deep night sky in dark mode.
+/// The part of the day the sky shows. The hours are the same all year, as Nimbus doesn't
+/// know where you are.
+enum SkyPhase: String, CaseIterable {
+    case dawn, day, dusk, night
+
+    static func at(_ date: Date) -> SkyPhase {
+        // For checking the look of each phase: -NimbusSkyPhase dusk on the command line.
+        if let forced = UserDefaults.standard.string(forKey: "NimbusSkyPhase").flatMap(SkyPhase.init) {
+            return forced
+        }
+        let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+        let hour = Double(parts.hour ?? 12) + Double(parts.minute ?? 0) / 60
+        switch hour {
+        case 5.5..<8: return .dawn
+        case 8..<18: return .day
+        case 18..<21: return .dusk
+        default: return .night
+        }
+    }
+
+    static var now: SkyPhase { at(.now) }
+}
+
+/// Nimbus's colours: paper by day, a deep sky in dark mode, both tinted by the time of day.
 enum Palette {
-    static let sky = dynamic(light: 0xF3EFE6, dark: 0x0D1220)
+    /// The sky behind everything, for the part of the day it is now.
+    static var sky: Color { sky(SkyPhase.now) }
+
+    static func sky(_ phase: SkyPhase) -> Color {
+        switch phase {
+        case .dawn: dawnSky
+        case .day: daySky
+        case .dusk: duskSky
+        case .night: nightSky
+        }
+    }
+
+    private static let dawnSky = dynamic(light: 0xF6ECE3, dark: 0x16152A)
+    private static let daySky = dynamic(light: 0xF3EFE6, dark: 0x101627)
+    private static let duskSky = dynamic(light: 0xF1E8EA, dark: 0x1A1326)
+    private static let nightSky = dynamic(light: 0xECEDF1, dark: 0x0D1220)
+    /// The light low in the sky around sunrise and sunset.
+    static let dawnGlow = dynamic(light: 0xF0A877, dark: 0xD9824F)
+    static let duskGlow = dynamic(light: 0xE08AA4, dark: 0xB4577F)
+    static let moon = dynamic(light: 0x9AA3B8, dark: 0xD8DEEA)
     static let card = dynamic(light: 0xFBF9F4, dark: 0x171D2E)
     static let line = dynamic(light: 0xD9D1C1, dark: 0x2C3552)
     /// The last days before an app expires, when Nimbus refreshes it.
@@ -34,6 +76,17 @@ enum Palette {
             return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
         })
         #endif
+    }
+}
+
+/// The sky's colour behind a screen, which follows the time of day.
+struct SkyBackground: View {
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            Palette.sky(SkyPhase.at(context.date))
+                .animation(.easeInOut(duration: 2), value: SkyPhase.at(context.date))
+        }
+        .ignoresSafeArea()
     }
 }
 
@@ -232,7 +285,10 @@ struct SkyArc: View {
                     .stroke(Palette.line, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                 geometry.path(from: 0, to: refreshFraction)
                     .stroke(Palette.warm, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                ForEach(0...7, id: \.self) { day in
+                // Today is where the sun, or the moon, is now.
+                Luminary(phase: SkyPhase.now)
+                    .position(geometry.point(at: 0))
+                ForEach(1...7, id: \.self) { day in
                     let point = geometry.point(at: Double(day) / 7)
                     Circle()
                         .fill(Double(day) / 7 <= refreshFraction ? Palette.warm : Palette.line)
@@ -278,6 +334,43 @@ struct SkyArc: View {
             }
         }
         return positions.map { Placed(body: $0.body, position: min(max($0.position, 0), 1)) }
+    }
+}
+
+/// The sun by day, low and glowing at dawn and dusk, and a crescent moon at night.
+private struct Luminary: View {
+    let phase: SkyPhase
+
+    var body: some View {
+        switch phase {
+        case .day:
+            Circle()
+                .fill(Palette.warm)
+                .frame(width: 12, height: 12)
+        case .dawn, .dusk:
+            let glow = phase == .dawn ? Palette.dawnGlow : Palette.duskGlow
+            ZStack {
+                Circle()
+                    .fill(RadialGradient(colors: [glow.opacity(0.45), glow.opacity(0)], center: .center, startRadius: 4, endRadius: 46))
+                    .frame(width: 92, height: 92)
+                Circle()
+                    .fill(glow)
+                    .frame(width: 12, height: 12)
+            }
+            .allowsHitTesting(false)
+        case .night:
+            // A crescent: the moon with a disc in the sky's colour over most of it.
+            Circle()
+                .fill(Palette.moon)
+                .frame(width: 13, height: 13)
+                .overlay(
+                    Circle()
+                        .fill(Palette.sky(.night))
+                        .frame(width: 11, height: 11)
+                        .offset(x: 4, y: -2)
+                )
+                .clipShape(Circle())
+        }
     }
 }
 
