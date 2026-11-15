@@ -123,8 +123,15 @@ struct SkyHeader: View {
                 .font(.footnote)
                 .foregroundStyle(Palette.faint)
             HStack(alignment: .center) {
-                Text(weather.title)
-                    .font(.system(.largeTitle, design: .rounded, weight: .semibold))
+                // A new kind of weather slides in from below as the old one leaves upwards.
+                ZStack(alignment: .leading) {
+                    Text(weather.title)
+                        .font(.system(.largeTitle, design: .rounded, weight: .semibold))
+                        .id(weather.title)
+                        .transition(.push(from: .bottom).combined(with: .opacity))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .clipped()
                 Spacer()
                 slotView
             }
@@ -132,10 +139,12 @@ struct SkyHeader: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .contentTransition(.opacity)
             SkyArc(bodies: planets, refreshFraction: refreshWindow / lifetime)
                 .frame(height: arcHeight)
                 .padding(.top, 14)
         }
+        .animation(.smooth(duration: 0.6), value: weather.title)
     }
 
     private struct Weather {
@@ -236,8 +245,7 @@ struct SkyArc: View {
                     .position(x: geometry.point(at: 1).x, y: proxy.size.height - 6)
 
                 ForEach(placed(along: geometry), id: \.body.id) { placed in
-                    planet(placed.body)
-                        .position(geometry.point(at: placed.position))
+                    PlanetView(planet: placed.body, position: placed.position, geometry: geometry, size: size)
                 }
             }
             .font(.caption2)
@@ -245,28 +253,6 @@ struct SkyArc: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(bodies.map(\.name).joined(separator: ", "))
-    }
-
-    private func planet(_ body: Planet) -> some View {
-        Group {
-            if let icon = body.icon {
-                icon.image.resizable().scaledToFill()
-            } else {
-                AsyncImage(url: body.fallbackURL) { image in
-                    image.resizable().scaledToFill()
-                } placeholder: {
-                    Palette.accent
-                }
-            }
-        }
-        .frame(width: size, height: size)
-        .clipShape(Circle())
-        // A gap in the sky's own colour keeps bodies that overlap apart.
-        .padding(2.5)
-        .background(Circle().fill(Palette.sky))
-        .overlay(
-            Circle().strokeBorder(body.expired ? Color.red : (body.icon?.color ?? Palette.accent).opacity(0.9), lineWidth: 1.5)
-        )
     }
 
     private struct Placed {
@@ -295,6 +281,109 @@ struct SkyArc: View {
     }
 }
 
+/// One app on the arc. When a refresh moves it forward, it flies along the arc, lifting off
+/// and growing a little on the way, and lands with a ring that spreads out and a tick.
+private struct PlanetView: View {
+    let planet: SkyArc.Planet
+    let position: Double
+    let geometry: ArcGeometry
+    let size: CGFloat
+    @State private var flights = 0
+    @State private var landings = 0
+
+    /// How long the flight back to the far end takes.
+    private static let flightTime = 1.1
+
+    private struct Flight {
+        var scale = 1.0
+        var lift = 0.0
+    }
+
+    var body: some View {
+        disc
+            .keyframeAnimator(initialValue: Flight(), trigger: flights) { content, flight in
+                content
+                    .scaleEffect(flight.scale)
+                    .offset(geometry.outward(at: position, by: flight.lift))
+            } keyframes: { _ in
+                KeyframeTrack(\.scale) {
+                    CubicKeyframe(1.3, duration: Self.flightTime * 0.45)
+                    CubicKeyframe(1.0, duration: Self.flightTime * 0.55)
+                }
+                KeyframeTrack(\.lift) {
+                    CubicKeyframe(18, duration: Self.flightTime * 0.45)
+                    CubicKeyframe(0, duration: Self.flightTime * 0.55)
+                }
+            }
+            .background {
+                // The landing: a ring in the app's colour that spreads out and fades.
+                Circle()
+                    .stroke(ringColor, lineWidth: 2)
+                    .keyframeAnimator(initialValue: 0.0, trigger: landings) { ring, progress in
+                        ring
+                            .scaleEffect(1 + progress * 1.2)
+                            .opacity(progress == 0 ? 0 : 1 - progress)
+                    } keyframes: { _ in
+                        LinearKeyframe(0.001, duration: 0.01)
+                        CubicKeyframe(1, duration: 0.8)
+                        LinearKeyframe(0, duration: 0.01)
+                    }
+            }
+            .modifier(OnArc(position: position, geometry: geometry))
+            .animation(.smooth(duration: Self.flightTime), value: position)
+            .sensoryFeedback(.success, trigger: landings)
+            .onChange(of: position) { old, new in
+                // Only a real jump forward, not the small shifts of spreading bodies apart.
+                guard new > old + 0.04 else { return }
+                flights += 1
+                Task {
+                    try? await Task.sleep(for: .seconds(Self.flightTime * 0.9))
+                    landings += 1
+                }
+            }
+    }
+
+    private var ringColor: Color {
+        planet.expired ? .red : (planet.icon?.color ?? Palette.accent)
+    }
+
+    private var disc: some View {
+        Group {
+            if let icon = planet.icon {
+                icon.image.resizable().scaledToFill()
+            } else {
+                AsyncImage(url: planet.fallbackURL) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Palette.accent
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        // A gap in the sky's own colour keeps bodies that overlap apart.
+        .padding(2.5)
+        .background(Circle().fill(Palette.sky))
+        .overlay(Circle().strokeBorder(ringColor.opacity(0.9), lineWidth: 1.5))
+    }
+}
+
+/// Places a view on the arc. Animating the position moves the view along the arc rather
+/// than in a straight line.
+private struct OnArc: ViewModifier, Animatable {
+    var position: Double
+    let geometry: ArcGeometry
+
+    var animatableData: Double {
+        get { position }
+        set { position = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content.position(geometry.point(at: position))
+    }
+}
+
 /// A shallow circular arc across a rectangle, rising from the bottom corners.
 private struct ArcGeometry {
     let center: CGPoint
@@ -313,6 +402,12 @@ private struct ArcGeometry {
     }
 
     var length: Double { Double(radius) * halfAngle * 2 }
+
+    /// An offset that points away from the arc's centre, out into the sky.
+    func outward(at position: Double, by distance: Double) -> CGSize {
+        let angle = -halfAngle + 2 * halfAngle * position
+        return CGSize(width: sin(angle) * distance, height: -cos(angle) * distance)
+    }
 
     /// A point on the arc; 0 is the left end, 1 the right.
     func point(at position: Double) -> CGPoint {
