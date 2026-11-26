@@ -328,12 +328,18 @@ async fn install() -> Result<()> {
         .err_429_retries(None)
         .login(&request.password, two_factor_prompt)
         .await
-        .map_err(|e| anyhow!("Sign-in failed: {e}"))?;
+        .map_err(|e| {
+            io::log(format!("{e}"));
+            anyhow!("Sign-in failed: {}", plain(&e))
+        })?;
     io::emit(json!({ "event": "signed_in" }));
 
     let session = DeveloperSession::from_account(&mut account)
         .await
-        .map_err(|e| anyhow!("Couldn't open a developer session: {e}"))?;
+        .map_err(|e| {
+            io::log(format!("{e}"));
+            anyhow!("Couldn't open a developer session: {}", plain(&e))
+        })?;
 
     let mut sideloader =
         SideloaderBuilder::<_, ExtensionsBehaviorCallbackBox>::new(session, apple_id)
@@ -790,5 +796,24 @@ mod tests {
         }
         remove_unpacked(&app);
         assert!(!app.exists());
+    }
+}
+
+/// The messages of an error report, outermost first, without the tree drawing and source
+/// locations its full form has. The full form goes to the log.
+fn plain(report: &impl std::fmt::Display) -> String {
+    let mut messages: Vec<String> = Vec::new();
+    for line in report.to_string().lines() {
+        let line = line.trim_start_matches(|c: char| "│├╰─ ".contains(c));
+        let Some(message) = line.strip_prefix('●') else { continue };
+        let message = message.trim().trim_end_matches('.').to_string();
+        if !message.is_empty() && !messages.contains(&message) {
+            messages.push(message);
+        }
+    }
+    if messages.is_empty() {
+        report.to_string()
+    } else {
+        messages.join(": ")
     }
 }
